@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFX Trace Viewer</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f141c'/><path d='M7 11v13h4M7 17h5' fill='none' stroke='%234a5a72' stroke-width='1.5'/><rect x='5' y='6' width='22' height='4' rx='1.5' fill='%237cc4ff'/><rect x='13' y='15' width='9' height='4' rx='1.5' fill='%23b18cff'/><rect x='12' y='22' width='15' height='4' rx='1.5' fill='%23f0b44c'/></svg>">
+<style>
+  /* Палитра: чернильная база, один акцент — янтарная «линза» текущего окна. */
+  :root {
+    color-scheme: dark;
+    --bg: #0f141c; --panel: #151c27; --raised: #1c2533; --rule: #263142; --rule-soft: #1a2230;
+    --text: #d9e1ec; --dim: #8593a8; --faint: #5b6779;
+    --lens: #f0b44c; --lens-soft: rgba(240,180,76,.14);
+    --err: #ff6b6b; --err-soft: rgba(255,107,107,.12);
+    --row-h: 24px; --indent: 12px;
+    --cols: 20px 190px minmax(140px, 1fr) 100px 76px minmax(220px, 2.4fr);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    font-variant-numeric: tabular-nums;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  @media (max-height: 560px) { body { overflow-y: auto; } }
+  .mono { font-family: var(--mono); }
+
+  button, input, select {
+    font: inherit; font-size: 12.5px; color: var(--text);
+    background: var(--raised); border: 1px solid var(--rule); border-radius: 5px;
+    height: 26px; padding: 0 10px;
+  }
+  input[type=checkbox] { height: auto; accent-color: var(--lens); }
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover { background: #232e3f; border-color: #36445a; }
+  button:active { background: #1a2230; }
+  button.primary { background: var(--lens); border-color: var(--lens); color: #1a1405; font-weight: 600; }
+  button.primary:hover { background: #f5c46a; }
+  button.ghost { background: transparent; border-color: transparent; color: var(--dim); }
+  button.ghost:hover { color: var(--text); background: var(--raised); }
+  input::placeholder { color: var(--faint); }
+  :focus-visible { outline: 2px solid var(--lens); outline-offset: 1px; }
+  #fileInput { display: none; }
+  label.filebtn {
+    display: inline-flex; align-items: center; height: 26px; padding: 0 10px; cursor: pointer;
+    border: 1px solid var(--rule); border-radius: 5px; background: var(--raised); font-size: 12.5px;
+  }
+  label.filebtn:hover { background: #232e3f; }
+  .seg { display: inline-flex; }
+  .seg > button { border-radius: 0; margin-left: -1px; }
+  .seg > button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+  .seg > button:last-child { border-radius: 0 5px 5px 0; }
+
+  /* ---------- header ---------- */
+  header {
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--rule);
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .brand h1 { font-size: 14px; font-weight: 650; margin: 0; letter-spacing: -.01em; white-space: nowrap; }
+  .brand .tid {
+    font-family: var(--mono); font-size: 12px; color: var(--dim); background: none; border: 0;
+    height: auto; padding: 0; cursor: copy;
+  }
+  .brand .tid:hover { color: var(--text); }
+  .readout { display: flex; gap: 22px; flex: 1; flex-wrap: wrap; min-width: 280px; }
+  .readout .r { display: flex; flex-direction: column; line-height: 1.15; }
+  .readout .r b { font-size: 15px; font-weight: 600; }
+  .readout .r span { color: var(--dim); font-size: 11px; }
+  .readout .r.lens b { color: var(--lens); }
+  .readout .r.err b { color: var(--err); }
+  .readout .r.muted b { color: var(--faint); }
+  .actions { display: flex; gap: 6px; }
+
+  /* ---------- minimap ---------- */
+  #minimapWrap { position: relative; height: 112px; background: var(--bg); flex: none; border-bottom: 1px solid var(--rule); }
+  #minimapWrap.empty { display: none; }
+  #minimap { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+
+  /* ---------- window bar & toolbar ---------- */
+  #winbar, #toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 7px 14px; background: var(--panel); border-bottom: 1px solid var(--rule);
+  }
+  #winbar label, #toolbar label.chk { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  #winbar .group { display: flex; align-items: center; gap: 6px; }
+  #winbar .grow, #toolbar .grow { flex: 1; }
+  #winStart, #winLen { width: 92px; font-family: var(--mono); font-size: 12px; }
+  #winClock { color: var(--lens); font-size: 12px; white-space: nowrap; }
+  #search { width: 320px; }
+  /* условия поиска плашками: клик по × убирает условие из строки */
+  #conds { display: flex; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
+  #conds:empty { display: none; }
+  .cond { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 4px 0 9px; font-size: 12px;
+    border: 1px solid var(--lens); border-radius: 11px; color: var(--text); background: var(--lens-soft); }
+  .cond.neg { border-color: var(--err); background: var(--err-soft); }
+  .cond.text { border-color: var(--rule); background: transparent; }
+  .cond button { height: 18px; min-width: 18px; padding: 0; border: 0; background: none; color: var(--dim); cursor: pointer; }
+  .cond button:hover { color: var(--text); }
+  #toolbar label.chk { display: inline-flex; align-items: center; gap: 6px; }
+  #chips { display: flex; gap: 6px; flex-wrap: wrap; flex-basis: 100%; }
+  #chips:empty { display: none; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+    border: 1px solid var(--rule); border-radius: 13px; height: 24px; padding: 0 10px; font-size: 12px;
+    background: transparent;
+  }
+  .chip:hover { background: var(--raised); }
+  .chip .dot { width: 8px; height: 8px; border-radius: 2px; }
+  .chip.off { color: var(--faint); border-style: dashed; }
+  .chip.off .dot { background: transparent !important; outline: 1px solid var(--faint); }
+  .chip .cnt { color: var(--faint); }
+
+  /* ---------- empty state ---------- */
+  #dropHint {
+    flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  #dropHint .box {
+    max-width: 520px; padding: 36px 40px; border: 1.5px dashed var(--rule); border-radius: 10px;
+    text-align: left;
+  }
+  #dropHint h2 { font-size: 20px; font-weight: 600; margin: 0 0 10px; letter-spacing: -.01em; }
+  #dropHint p { color: var(--dim); margin: 0 0 18px; line-height: 1.55; }
+  #dropHint .row-actions { display: flex; gap: 8px; }
+  body.dragover::after {
+    content: "Отпусти, чтобы открыть"; position: fixed; inset: 12px; display: flex; align-items: center;
+    justify-content: center; font-size: 22px; color: var(--lens); border: 2px dashed var(--lens);
+    border-radius: 12px; background: rgba(15,20,28,.86); z-index: 99; pointer-events: none;
+  }
+
+  /* ---------- main split ---------- */
+  #main { display: flex; flex: 1; min-height: 0; }
+  #main.empty { display: none; }
+  #waterfallCol { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  #focusbar {
+    display: none; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 6px 14px; border-bottom: 1px solid var(--rule);
+    background: var(--lens-soft); font-size: 12px; flex: none;
+  }
+  #focusbar.on { display: flex; }
+  #focusbar .lbl { color: var(--lens); font-weight: 600; margin-right: 2px; }
+  #focusbar .crumb {
+    border-radius: 4px; padding: 2px 6px; cursor: pointer; max-width: 260px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; color: var(--dim);
+  }
+  #focusbar .crumb:hover { color: var(--text); background: var(--raised); }
+  #focusbar .crumb.cur { color: var(--text); font-weight: 600; cursor: default; background: none; }
+  #focusbar .sep { color: var(--faint); }
+  #focusbar .grow { flex: 1; }
+
+  /* шапка колонок; таймлайн-колонка несёт ось времени */
+  #axis {
+    display: grid; grid-template-columns: var(--cols); align-items: stretch; flex: none;
+    height: 26px; border-bottom: 1px solid var(--rule); background: var(--panel);
+    color: var(--dim); font-size: 11.5px;
+  }
+  #axis > div { display: flex; align-items: center; padding-left: 8px; white-space: nowrap; }
+  #axis > .num { justify-content: flex-end; padding: 0 12px 0 0; }
+  #axisTicks { position: relative; padding: 0 !important; overflow: hidden; }
+  #axisTicks .tick {
+    position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--rule);
+    padding: 6px 0 0 4px; font-size: 10.5px; color: var(--dim); white-space: nowrap;
+  }
+
+  #rows { flex: 1 1 0; min-height: 140px; overflow: auto; }
+  .row {
+    display: grid; grid-template-columns: var(--cols);
+    align-items: center; height: var(--row-h); border-bottom: 1px solid var(--rule-soft);
+    cursor: pointer; white-space: nowrap; box-shadow: inset 2px 0 0 transparent;
+  }
+  .row:hover { background: #18202c; }
+  .row.sel { background: var(--lens-soft); box-shadow: inset 2px 0 0 var(--lens); }
+  .row.iserr { box-shadow: inset 2px 0 0 var(--err); }
+  .row.iserr.sel { box-shadow: inset 2px 0 0 var(--lens); }
+  .row .tw {
+    width: 20px; text-align: center; color: var(--dim); font-size: 12px; user-select: none;
+  }
+  .row .tw.leaf { visibility: hidden; }
+  .row .tw:hover { color: var(--lens); }
+  /* направляющие дерева: вертикальная линия на каждый уровень вложенности */
+  .row .svc {
+    --dd: min(var(--d, 0), 28);
+    display: flex; align-items: center; gap: 7px; height: 100%; overflow: hidden;
+    padding-left: calc(4px + var(--dd) * var(--indent));
+    background: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px var(--indent))
+                0 0 / calc(var(--dd) * var(--indent)) 100% no-repeat;
+  }
+  .row .svc .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  /* значок «браузер» — спан пришёл с фронтенда (webjs + span.kind=client) */
+  .fe { width: 14px; height: 14px; flex: none; color: var(--text); vertical-align: -2px; }
+  .row.isfe .svc span { color: var(--text); }
+  #details .fe-badge {
+    display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 0 7px; height: 20px;
+    border: 1px solid var(--rule); border-radius: 10px; color: var(--text); font-size: 11.5px;
+  }
+  .row .svc span { overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+  .row .op { overflow: hidden; text-overflow: ellipsis; padding: 0 8px; }
+  .row .t, .row .d { text-align: right; padding-right: 12px; font-size: 11.5px; }
+  .row .t { color: var(--faint); }
+  .row .d { color: var(--text); }
+  .row .barcell { position: relative; height: 100%; background: var(--grid, none); }
+  .row .bar {
+    position: absolute; top: 6px; bottom: 6px; border-radius: 2px; min-width: 2px;
+    background: var(--svc-color, #7cc4ff);
+  }
+  .row .bar.zero { top: 9px; bottom: 9px; }
+  .row .bar.clipped { opacity: .5; }
+  .row .bar.errbar { background: repeating-linear-gradient(135deg, var(--err) 0 4px, #c94b4b 4px 8px); }
+  /* FE-спан: заштриховано время без бэкенда (сеть, DNS/TLS, очередь браузера) */
+  .row .bar.gap-warn, .row .bar.gap-bad, .row .bar.gap-none { --hatch: #e6c24a; background:
+    var(--cover, none), repeating-linear-gradient(135deg, var(--hatch) 0 3px, transparent 3px 6px), color-mix(in srgb, var(--hatch) 25%, transparent); }
+  .row .bar.gap-bad { --hatch: var(--err); }
+  .row .bar.gap-none { --hatch: var(--dim); background: none; outline: 1px dashed var(--dim); outline-offset: -1px; }
+  .gapnote { margin: 0 0 12px; padding: 6px 9px; border-left: 3px solid var(--dim); background: var(--raised); font-size: 12px; }
+  .gapnote.warn { border-color: #e6c24a; } .gapnote.bad { border-color: var(--err); }
+  .row.iserr .op { color: var(--err); }
+  .row.depth1 .op { font-weight: 600; }
+  .row.depth1 .svc span { color: var(--text); }
+  .empty-rows { padding: 28px 16px; color: var(--dim); }
+  /* критический путь: спаны на пути — с рамкой, остальные приглушены */
+  .row.crit .bar { outline: 2px solid var(--lens); outline-offset: 1px; }
+  .row.nocrit { opacity: .38; }
+  /* панель «Почему медленно» */
+  #details .an h4 { margin: 14px 0 6px; font-size: 12px; color: var(--dim); font-weight: 600; }
+  #details .an tr[data-goto], #details .an tr[data-q] { cursor: pointer; }
+  #details .an tr[data-goto]:hover td, #details .an tr[data-q]:hover td { color: var(--text); background: var(--raised); }
+  #details .an td { word-break: break-word; }
+  #details .an td.n { text-align: right; white-space: nowrap; font-family: var(--mono); padding-left: 8px; }
+  #details .an th { text-align: right; color: var(--faint); font-weight: 400; font-size: 11px; padding: 0 0 4px 8px; }
+  #details .an th:first-child { text-align: left; padding-left: 0; }
+  .n1 { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 8px; font-size: 10.5px;
+        background: color-mix(in srgb, var(--err) 25%, transparent); color: var(--err); white-space: nowrap; }
+
+  #cap {
+    padding: 6px 14px; color: var(--dim); font-size: 12px; border-top: 1px solid var(--rule);
+    display: none; justify-content: space-between; align-items: center; gap: 10px; background: var(--panel);
+  }
+
+  /* ---------- details ---------- */
+  #details {
+    width: 400px; flex: none; border-left: 1px solid var(--rule); background: var(--panel);
+    overflow: auto; display: none;
+  }
+  #details.open { display: block; }
+  #details .dhead { padding: 14px 16px 12px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--panel); }
+  #details .dtop { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #details .svcname { display: inline-flex; align-items: center; gap: 7px; color: var(--dim); font-size: 12px; }
+  #details .svcname i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  #details h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; line-height: 1.35; word-break: break-word; }
+  #details h3.err { color: var(--err); }
+  #details .facts { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; gap: 4px 22px; margin-bottom: 12px; }
+  #details .facts b { display: block; font-size: 14px; font-weight: 600; }
+  #details .facts span { color: var(--dim); font-size: 11px; }
+  #details .dbody { padding: 4px 16px 16px; }
+  #details summary { cursor: pointer; padding: 10px 0 6px; color: var(--dim); font-size: 12px; font-weight: 600; }
+  #details summary:hover { color: var(--text); }
+  #details table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #details td { border-top: 1px solid var(--rule-soft); padding: 4px 8px 4px 0; vertical-align: top; word-break: break-all; }
+  #details td.k { color: var(--dim); white-space: nowrap; padding-right: 14px; word-break: normal; width: 1%; }
+  #details tr.proc td.k { color: var(--faint); font-style: italic; }
+  #details td.act { width: 1%; white-space: nowrap; padding-right: 0; }
+  #details td.act button { height: 18px; min-width: 20px; padding: 0 5px; font-size: 12px; line-height: 1; opacity: 0; }
+  #details tr:hover td.act button, #details td.act button:focus-visible { opacity: 1; }
+  #details .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12px; }
+  #details .kv .k { color: var(--dim); }
+  #details pre {
+    background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 10px;
+    font-size: 11px; overflow: auto; max-height: 40vh; margin: 4px 0 0;
+  }
+  .dot { display: inline-block; }
+
+  #hintbar {
+    padding: 5px 14px; color: var(--faint); font-size: 11px; border-top: 1px solid var(--rule);
+    background: var(--panel); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none;
+  }
+  #hintbar span { margin-right: 14px; }
+  kbd {
+    font-family: var(--mono); color: var(--dim); background: var(--raised); border: 1px solid var(--rule);
+    border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; font-size: 10.5px;
+  }
+  .hidden { display: none !important; }
+
+  @media (max-width: 900px) {
+    :root { --cols: 20px 130px minmax(120px, 1fr) 0 64px minmax(140px, 1.6fr); }
+    .row .t, #axis .tcol { visibility: hidden; }
+    #details { position: fixed; inset: auto 0 0 0; width: auto; max-height: 60vh; border-left: 0; border-top: 1px solid var(--rule); z-index: 5; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>SFX Trace Viewer</h1>
+    <button id="traceIdBtn" class="tid hidden" title="Скопировать traceId"></button>
+  </div>
+  <div class="readout" id="stats"></div>
+  <div class="actions">
+    <input type="file" id="fileInput" accept=".json,application/json" multiple>
+    <label class="filebtn" for="fileInput">Открыть файл…</label>
+    <button id="btnDemo" title="Загрузить trace.json из этой же папки">trace.json</button>
+    <button id="btnExport" class="hidden" title="Скачать спаны текущего окна (с фильтрами) в JSON">Скачать окно</button>
+  </div>
+</header>
+
+<div id="minimapWrap" class="empty">
+  <canvas id="minimap" aria-label="Мини-карта всего трейса: протяни мышью, чтобы выбрать окно"></canvas>
+</div>
+
+<div id="winbar" class="hidden">
+  <div class="group">
+    <span class="seg">
+      <button id="btnPanL" title="Влево на пол-окна (←)" aria-label="Влево">◀</button>
+      <button id="btnPanR" title="Вправо на пол-окна (→)" aria-label="Вправо">▶</button>
+    </span>
+    <span class="seg">
+      <button id="btnZoomOut" title="Окно шире ×2 (−)" aria-label="Шире">−</button>
+      <button id="btnZoomIn" title="Окно уже ×2 (+)" aria-label="Уже">+</button>
+    </span>
+  </div>
+  <div class="group">
+    <button id="btnFit" title="Весь трейс (F)">Весь трейс</button>
+    <button id="btnHot" title="Самое плотное окно ~15 с (H)">Плотная зона</button>
+    <button id="btnWin12" title="Окно 12 с вокруг центра">12 с</button>
+    <button id="btnErr" title="Окно вокруг ошибочных спанов">К ошибкам</button>
+  </div>
+  <div class="grow"></div>
+  <div class="group">
+    <label for="winStart">старт, с</label>
+    <input id="winStart" type="number" step="any" min="0">
+    <label for="winLen">длина, с</label>
+    <input id="winLen" type="number" step="any" min="0.001">
+    <button id="btnApplyWin">Применить</button>
+  </div>
+  <span id="winClock" class="mono"></span>
+</div>
+
+<div id="toolbar" class="hidden">
+  <input id="search" type="search" placeholder="Сервис, операция или тег: span.kind=client" aria-label="Поиск" list="searchList" autocomplete="off"
+    title="Текст ищется в сервисе и операции. Условия по тегам (tags и processTags), через пробел = И:&#10;  key=value   точно (без учёта регистра)&#10;  key!=value  не равно&#10;  key~часть   подстрока&#10;  key>500  key<=399   числа&#10;  key         тег есть&#10;  !условие    отрицание&#10;  key=&quot;a b&quot;   значение с пробелами&#10;  spanId=…  или просто id спана">
+  <datalist id="searchList"></datalist>
+  <select id="minDur" aria-label="Минимальная длительность">
+    <option value="0">Любая длительность</option>
+    <option value="1">Дольше 1 ms</option>
+    <option value="10">Дольше 10 ms</option>
+    <option value="100">Дольше 100 ms</option>
+    <option value="1000">Дольше 1 s</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="errOnly"> Только ошибки</label>
+  <label class="chk" title="Цепочка спанов, которая определяет итоговую длительность (в поддереве или по корням окна)"><input type="checkbox" id="critOn"> Критический путь</label>
+  <button id="btnWhy" title="Топ по собственному времени и повторяющиеся операции (N+1) — по поддереву или окну">Почему медленно</button>
+  <div class="grow"></div>
+  <span class="seg">
+    <button id="btnCollapseAll" title="Свернуть все узлы дерева">Свернуть всё</button>
+    <button id="btnExpandAll" title="Развернуть всё дерево">Развернуть всё</button>
+  </span>
+  <button id="btnChipsNone" class="ghost" title="Выключить все сервисы, затем кликом включить нужные">Скрыть все сервисы</button>
+  <button id="btnChipsReset" class="ghost hidden" title="Включить обратно все сервисы">Показать все сервисы</button>
+  <div id="conds"></div>
+  <div id="chips"></div>
+</div>
+
+<div id="dropHint">
+  <div class="box">
+    <h2>Открой трейс SignalFx</h2>
+    <p>Перетащи сюда <kbd>trace.json</kbd> или сразу несколько сегментов — файлы из
+      <span class="mono">download_trace.py</span> или из кнопки Download Trace в SignalFx.
+      Весь трейс ляжет на мини-карту; протяни по ней мышью, чтобы разглядеть нужные секунды.</p>
+    <div class="row-actions">
+      <label class="filebtn" for="fileInput">Выбрать файлы…</label>
+    </div>
+  </div>
+</div>
+
+<div id="focusbar"></div>
+
+<div id="main" class="empty">
+  <div id="waterfallCol">
+    <div id="axis" class="hidden">
+      <div></div><div>Сервис</div><div>Операция</div><div class="num tcol">Старт</div><div class="num">Длит.</div>
+      <div id="axisTicks"></div>
+    </div>
+    <div id="rows"></div>
+    <div id="cap">
+      <span id="capText"></span>
+      <button id="btnMore">Показать ещё 1500</button>
+    </div>
+    <div id="hintbar" class="hidden">
+      <span><kbd>←</kbd> <kbd>→</kbd> сдвиг</span>
+      <span><kbd>+</kbd> <kbd>−</kbd> зум</span>
+      <span><kbd>F</kbd> весь трейс</span>
+      <span><kbd>H</kbd> плотная зона</span>
+      <span id="feHint" class="hidden"></span>
+      <span><kbd>Esc</kbd> выйти из фокуса</span>
+      <span>Мини-карта: протяни — новое окно, тяни край — ширина, середину — сдвиг, двойной клик — зум</span>
+    </div>
+  </div>
+  <div id="details"></div>
+</div>
+
+<script>
+'use strict';
+/* ============================== разбор трейса ==============================
+   Понимает формат SignalFx "Download APM traces" API:
+     {spanId, parentId, serviceName, operationName, startTime: ISO, durationMicros, tags}
+   и zipkin-подобный {id, parentId, name, timestamp: μs, duration: μs, localEndpoint.serviceName}.
+   startTime может быть ISO-строкой, epoch в ms/μs/ns — определяется по величине. */
+
+// без красных оттенков — красный зарезервирован под ошибки, янтарный — под окно
+const PAL = ['#7cc4ff','#5ccfa8','#b79cff','#e8a1c9','#9fd36b','#62c6d9',
+             '#8fa2ff','#4fb98a','#d993f2','#7fd6e8','#c2c97a','#a3b8d6'];
+function svcColor(name){
+  let h = 0; for (let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) >>> 0;
+  return PAL[h % PAL.length];
+}
+function parseTime(v){                       // -> ms epoch float | null
+  if (v == null) return null;
+  if (typeof v === 'number' && isFinite(v)) {
+    if (v > 1e17) return v/1e6;              // ns
+    if (v > 1e14) return v/1e3;              // μs
+    if (v > 1e11) return v;                  // ms
+    return v*1000;                           // сек
+  }
+  const t = Date.parse(String(v));
+  return isNaN(t) ? null : t;
+}
+function normSpans(data){
+  let arr = Array.isArray(data) ? data : (Array.isArray(data.spans) ? data.spans : null);
+  if (!arr) {
+    // форма {segments:[{spans:[...]},...]}
+    if (Array.isArray(data.segments)) arr = data.segments.flatMap(g => g.spans || []);
+  }
+  if (!Array.isArray(arr)) throw new Error('В файле нет массива спанов (ждал {spans:[...]}, {segments:[...]} или [...])');
+  const out = [];
+  for (const s of arr) {
+    if (!s || typeof s !== 'object') continue;
+    const id = s.spanId ?? s.id ?? s.spanID;
+    if (id == null) continue;
+    const start = parseTime(s.startTime ?? s.start ?? s.timestamp);
+    if (start == null) continue;
+    const durMs = ((s.durationMicros ?? s.durationMs ?? s.duration ?? 0)) /
+                  (s.durationMs != null ? 1 : 1000);   // durationMicros/zipkin duration = μs
+    const tags = s.tags || s.properties || {};
+    const svc = s.serviceName ?? s.localEndpoint?.serviceName
+              ?? tags['service.name'] ?? tags['sf_service'] ?? 'unknown';
+    const hsc = +(tags['http.status_code'] ?? tags['http.status.code'] ?? -1);
+    // ресурсные атрибуты SDK в выгрузке SignalFx лежат в processTags, но бывают и в tags
+    const attr = k => tags[k] ?? s.processTags?.[k];
+    const fe = String(attr('telemetry.sdk.language') ?? '').toLowerCase() === 'webjs'
+            && String(attr('span.kind') ?? '').toLowerCase() === 'client';
+    const err = !!(s.error === true || tags.error === true || tags.error === 'true'
+              || tags['status.code'] === 2 || s.status?.code === 2 || hsc >= 500);
+    out.push({
+      id: String(id), parent: s.parentId != null && s.parentId !== '' ? String(s.parentId) : '',
+      svc, op: String(s.operationName ?? s.name ?? '?'),
+      start, dur: Math.max(0, durMs), end: start + Math.max(0, durMs),
+      err, fe, tags, raw: s,
+    });
+  }
+  return out;
+}
+
+/* ---- FE: сколько времени FE-спана не покрыто бэкендом ----
+   Бэкенд = первые не-FE спаны в каждой ветке под FE-спаном (FE-потомков проходим насквозь).
+   Интервалы объединяем, чтобы параллельные запросы не считались дважды. */
+const GAP_WARN = { ratio: 0.4, ms: 150 };   // жёлтый
+const GAP_BAD  = { ratio: 0.7, ms: 500 };   // красный
+function gapLevel(gap, dur){
+  const r = dur > 0 ? gap / dur : 0;
+  if (r >= GAP_BAD.ratio && gap >= GAP_BAD.ms) return 'bad';
+  if (r >= GAP_WARN.ratio && gap >= GAP_WARN.ms) return 'warn';
+  return '';
+}
+function computeFeGaps(){
+  for (const s of S.spans) {
+    if (!s.fe) continue;
+    const be = [], stack = [...(S.children.get(s.id)||[])];
+    while (stack.length) {
+      const c = stack.pop();
+      if (c.fe) stack.push(...(S.children.get(c.id)||[])); else be.push([c.start, c.end]);
+    }
+    if (!be.length) { s.gap = { lvl: 'none' }; continue; }
+    be.sort((a,b) => a[0]-b[0]);
+    const u = [];                                   // объединение интервалов
+    for (const [a,b] of be) if (u.length && a <= u[u.length-1][1]) u[u.length-1][1] = Math.max(u[u.length-1][1], b); else u.push([a,b]);
+    const cover = u.reduce((n,[a,b]) => n + b - a, 0);
+    const gap = Math.max(0, s.dur - cover);
+    s.gap = { lvl: gapLevel(gap, s.dur), gap, cover: Math.min(cover, s.dur) };
+    // сплошные куски поверх штриховки — где бэкенд работал (по его часам; при skew часов может сдвинуться)
+    if (s.gap.lvl && s.dur > 0) {
+      const pct = t => (Math.min(Math.max((t - s.start)/s.dur, 0), 1)*100).toFixed(2) + '%';
+      const stops = u.map(([a,b]) => `transparent ${pct(a)}, var(--svc-color) ${pct(a)} ${pct(b)}, transparent ${pct(b)}`);
+      s.gap.bg = `linear-gradient(90deg, ${stops.join(', ')})`;
+    }
+  }
+}
+
+/* ---- собственное время (self): длительность минус объединение детей, обрезанных по родителю ---- */
+function unionLen(iv){
+  iv.sort((a,b) => a[0]-b[0]);
+  let n = 0, end = -Infinity;
+  for (const [a,b] of iv) if (b > end) { n += b - Math.max(a, end); end = b; }
+  return n;
+}
+function computeSelf(){
+  for (const s of S.spans) {
+    const iv = (S.children.get(s.id)||[]).map(c => [Math.max(c.start, s.start), Math.min(c.end, s.end)]).filter(([a,b]) => b > a);
+    s.self = Math.max(0, s.dur - unionLen(iv));
+  }
+}
+/* ---- критический путь: курсор = конец родителя; берём ребёнка, начавшегося до курсора,
+   с самым поздним концом (конец обрезан по курсору — перекрытия не рвут путь), уходим в него,
+   курсор = его старт, повторяем. */
+function critPath(roots){
+  const set = new Set();
+  const walk = s => {
+    set.add(s.id);
+    const kids = S.children.get(s.id) || [];
+    // ponytail: O(детей²) на узел; при десятках тысяч детей у одного спана — сортировка + указатель
+    for (let cur = s.end;;) {
+      let best = null;
+      for (const c of kids) if (c.start < cur && !set.has(c.id) && (!best || Math.min(c.end, cur) > Math.min(best.end, cur))) best = c;
+      if (!best) break;
+      walk(best); cur = best.start;
+    }
+  };
+  roots.forEach(walk);
+  return set;
+}
+const N1_MIN = 10;   // столько одинаковых вызовов в области анализа — подозрение на N+1 / цикл
+
+const FE_TITLE = 'Frontend: браузерный SDK (telemetry.sdk.language=webjs, span.kind=client)';
+const FE_ICON = `<svg class="fe" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-label="${FE_TITLE}"><title>${FE_TITLE}</title><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 5.5h13"/><circle cx="3.6" cy="4" r=".4" fill="currentColor"/><circle cx="5.2" cy="4" r=".4" fill="currentColor"/></svg>`;
+
+/* ============================== состояние ============================== */
+const S = {
+  traceId: '', spans: [], byId: new Map(), children: new Map(), tagIdx: new Map(), sugBase: [], conds: [],
+  t0: 0, t1: 1, winStart: 0, winEnd: 1,
+  off: new Set(), q: '', minDur: 0, errOnly: false,
+  selId: null, limit: 1500, truncated: 0,
+  collapsed: new Set(),          // id свёрнутых узлов
+  focusId: null,                 // корень «проваливания»
+  savedWin: null,                // окно до входа в фокус
+  critOn: false,                 // подсветка критического пути
+};
+const $ = id => document.getElementById(id);
+const fmtDur = ms => ms <= 0 ? '0' :
+  ms < 1 ? ms.toFixed(3).replace(/0+$/,'').replace(/\.$/,'') + 'ms' :
+  ms < 1000 ? (ms < 10 ? ms.toFixed(2) : ms.toFixed(1)).replace(/\.0$/,'') + 'ms' :
+  ms < 60000 ? (ms/1000).toFixed(ms < 10000 ? 2 : 1).replace(/\.?0+$/,'') + 's' :
+  Math.floor(Math.round(ms/1000)/60) + 'm' + Math.round(ms/1000)%60 + 's';
+const fmtClock = ms => {
+  const d = new Date(ms);
+  return d.toTimeString().slice(0,8) + '.' + String(d.getMilliseconds()).padStart(3,'0');
+};
+const fmtDurBig = ms => {
+  const s = Math.round(ms/1000);
+  return s < 3600 ? Math.floor(s/60)+'m'+String(s%60).padStart(2,'0')+'s'
+                  : Math.floor(s/3600)+'h'+String(Math.floor(s%3600/60)).padStart(2,'0')+'m';
+};
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ============================== загрузка ============================== */
+function loadTrace(data, name){
+  S.spans = normSpans(data);
+  if (!S.spans.length) throw new Error('0 распознанных спанов');
+  S.traceId = String(data.traceId || S.spans[0].raw.traceId || '');
+  S.byId = new Map(S.spans.map(s => [s.id, s]));
+  S.children = new Map();
+  for (const s of S.spans) {
+    if (s.parent && S.byId.has(s.parent)) {
+      if (!S.children.has(s.parent)) S.children.set(s.parent, []);
+      S.children.get(s.parent).push(s);
+    }
+  }
+  for (const list of S.children.values()) list.sort((a,b) => a.start - b.start);
+  computeFeGaps();
+  computeSelf();
+  S.spans.sort((a,b) => a.start - b.start);
+  S.t0 = S.spans[0].start;
+  S.t1 = S.spans[S.spans.length-1].end;
+  for (const s of S.spans) if (s.end > S.t1) S.t1 = s.end;
+  S.off = new Set(); S.q = ''; S.conds = []; S.minDur = 0; S.errOnly = false; S.selId = null; S.limit = 1500;
+  S.collapsed = new Set(); S.focusId = null; S.savedWin = null;
+  $('search').value = ''; $('minDur').value = '0'; $('errOnly').checked = false;
+  // индекс тегов: ключ -> (значение -> число спанов); для условий поиска и автодополнения
+  S.tagIdx = new Map();
+  for (const s of S.spans) for (const obj of [s.tags, s.raw.processTags || {}])
+    for (const [k, v] of Object.entries(obj)) {
+      let m = S.tagIdx.get(k); if (!m) S.tagIdx.set(k, m = new Map());
+      if (v == null || typeof v === 'object' || String(v).length > 120) continue;   // длинное (SQL, стеки) в подсказки не берём
+      m.set(String(v), (m.get(String(v))||0) + 1);
+    }
+  // базовые подсказки: сервисы, ключи тегов, операции — по убыванию частоты
+  const freq = (key) => [...S.spans.reduce((m, s) => m.set(s[key], (m.get(s[key])||0) + 1), new Map())]
+    .sort((a,b) => b[1]-a[1]);
+  const keys = [...S.tagIdx].map(([k, m]) => [k, [...m.values()].reduce((a,b) => a+b, 0)]).sort((a,b) => b[1]-a[1]);
+  S.sugBase = [...freq('svc').map(([v,n]) => [v, `сервис · ${n}`]),
+               ...keys.map(([k,n]) => [k + '=', `тег · ${n}`]),
+               ...freq('op').slice(0, 500).map(([v,n]) => [v, `операция · ${n}`])];
+  S.conds = []; renderConds(); updateSuggest('');
+  renderChips();
+  ['winbar','toolbar','axis','hintbar','btnExport'].forEach(id => $(id).classList.remove('hidden'));
+  ['minimapWrap','main'].forEach(id => $(id).classList.remove('empty'));
+  $('dropHint').style.display = 'none';
+  const tb = $('traceIdBtn');
+  tb.textContent = S.traceId || 'без traceId'; tb.classList.remove('hidden');
+  document.title = `${S.traceId || name} · SFX Trace Viewer`;
+  const nFe = S.spans.filter(s => s.fe).length;
+  $('feHint').innerHTML = nFe ? `${FE_ICON} спан с фронтенда (${nFe})` : '';
+  $('feHint').classList.toggle('hidden', !nFe);
+  if (S.t1 - S.t0 > 5*60*1000) hotWindow(); else fitWindow();  // длинный трейс — сразу к плотной зоне
+  drawMinimap(); renderAll(); updateStats();
+  applyHash();
+}
+function updateStats(){
+  const w = S.winEnd - S.winStart;
+  const all = windowSpans(false), shown = windowSpans(true);
+  const errs = all.filter(s => s.err).length;
+  const filtered = S.q || S.minDur || S.errOnly || S.off.size;
+  const r = (cls, val, lbl) => `<div class="r ${cls}"><b>${val}</b><span>${lbl}</span></div>`;
+  $('stats').innerHTML =
+    r('lens', fmtDur(w), 'окно') +
+    r('', shown.length, filtered ? `спанов после фильтров из ${all.length}` : 'спанов в окне') +
+    r(errs ? 'err' : 'muted', errs, 'ошибок в окне') +
+    r('', S.spans.length, 'спанов в трейсе') +
+    r('', fmtDurBig(S.t1-S.t0), 'длина трейса') +
+    r('', new Set(S.spans.map(s=>s.svc)).size, 'сервисов');
+}
+async function fetchJson(url){
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+/* ============================== окно ============================== */
+function setWindow(a, b, opts={}){
+  const min = 50; // ms
+  if (b - a < min) { const c = (a+b)/2; a = c - min/2; b = c + min/2; }
+  S.winStart = Math.max(S.t0, a);
+  S.winEnd   = Math.min(S.t1, b);
+  if (opts.keep !== true) { S.selId = null; $('details').classList.remove('open'); }
+  syncWinInputs(); drawMinimap(); renderAll(); updateStats();
+}
+function fitWindow(){ setWindow(S.t0, S.t1); }
+function zoomWindow(k){
+  const c = (S.winStart + S.winEnd)/2, w = (S.winEnd - S.winStart)*k;
+  setWindow(c - w/2, c + w/2, {keep:true});
+}
+function panWindow(frac){
+  const d = (S.winEnd - S.winStart)*frac;
+  setWindow(S.winStart + d, S.winEnd + d, {keep:true});
+}
+function hotWindow(widthMs = 15000){
+  const N = 1000, bw = (S.t1 - S.t0)/N;
+  const hist = new Float64Array(N);
+  for (const s of S.spans) hist[Math.min(N-1, Math.max(0, Math.floor((s.start - S.t0)/bw)))]++;
+  const need = Math.max(1, Math.round(widthMs/bw));
+  let best = -1, bi = 0, cur = 0;
+  for (let i=0;i<need;i++) cur += hist[i];
+  best = cur;
+  for (let i=need;i<N;i++){ cur += hist[i] - hist[i-need]; if (cur > best){ best = cur; bi = i - need + 1; } }
+  const a = S.t0 + bi*bw, b = Math.min(S.t1, a + widthMs);
+  setWindow(a, b);
+}
+function errWindow(){
+  const errs = S.spans.filter(s => s.err);
+  if (!errs.length) { alert('Ошибочных спанов в трейсе нет'); return; }
+  let t0 = Infinity, t1 = -Infinity;
+  for (const s of errs) { t0 = Math.min(t0, s.start); t1 = Math.max(t1, s.end); }
+  const pad = Math.max(2000, (t1 - t0)*0.1);
+  setWindow(t0 - pad, t1 + pad);
+}
+function syncWinInputs(){
+  $('winStart').value = ((S.winStart - S.t0)/1000).toFixed(3);
+  $('winLen').value = ((S.winEnd - S.winStart)/1000).toFixed(3);
+  $('winClock').textContent = `${fmtClock(S.winStart)} – ${fmtClock(S.winEnd)}`;
+  $('winClock').title = 'Границы окна, местное время браузера';
+}
+
+/* ============================== фильтры ============================== */
+function passesFilters(s){
+  if (S.off.has(s.svc)) return false;
+  if (S.minDur > 0 && s.dur < S.minDur) return false;
+  if (S.errOnly && !s.err) return false;
+  for (const c of S.conds) if (condOk(s, c) === c.neg) return false;
+  return true;
+}
+
+/* ---- поиск: текст + условия по тегам ---- */
+// значение поля спана: псевдоключи spanId/parentId, затем tags, затем processTags
+function attrOf(s, k){
+  if (k === 'spanId') return s.id;
+  if (k === 'parentId') return s.parent;
+  return s.tags[k] ?? s.raw.processTags?.[k];
+}
+const COND_RE = /^([^=<>~!]+?)(>=|<=|!=|=|~|>|<)(.*)$/;
+const unq = v => v.replace(/^"|"$/g, '');
+// токены через пробел; "..." держит пробелы внутри значения
+const tokenize = q => q.match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
+function parseQuery(q){
+  return tokenize(q).map(raw => {
+    let t = raw, neg = false;
+    if (t.length > 1 && t[0] === '!') { neg = true; t = t.slice(1); }
+    const m = t.match(COND_RE);
+    if (m) return { raw, neg, key: m[1], op: m[2], val: unq(m[3]).toLowerCase() };
+    const w = unq(t);
+    if (S.byId.has(w)) return { raw, neg, key: 'spanId', op: '=', val: w.toLowerCase() };
+    if (S.tagIdx.has(w)) return { raw, neg, key: w, op: '?' };                 // «тег есть»
+    return { raw, neg, text: w.toLowerCase() };
+  });
+}
+function condOk(s, c){
+  if (c.text != null) return (s.svc + ' ' + s.op).toLowerCase().includes(c.text);
+  const v = attrOf(s, c.key);
+  if (c.op === '?') return v != null;
+  if (v == null) return false;
+  const sv = String(v).toLowerCase();
+  if (c.op === '=') return sv === c.val;
+  if (c.op === '!=') return sv !== c.val;
+  if (c.op === '~') return sv.includes(c.val);
+  const a = parseFloat(v), b = parseFloat(c.val);
+  if (isNaN(a) || isNaN(b)) return false;
+  return c.op === '>' ? a > b : c.op === '<' ? a < b : c.op === '>=' ? a >= b : a <= b;
+}
+const quoteVal = v => /[\s"]/.test(v) ? `"${v.replace(/"/g, '')}"` : v;
+function setQuery(v){
+  $('search').value = v;
+  S.q = v.trim();
+  S.conds = parseQuery(S.q).filter(c => c.text != null || c.op === '?' || c.val !== '');  // «key=» ещё набирается
+  renderConds(); updateSuggest(v); renderAll(); updateStats();
+}
+function renderConds(){
+  $('conds').innerHTML = S.conds.length < 1 ? '' : S.conds.map((c, i) =>
+    `<span class="cond${c.neg ? ' neg' : ''}${c.text != null ? ' text' : ''}" title="${c.text != null ? 'текст в сервисе или операции' : 'условие по тегу'}">${esc(c.raw)}<button data-ci="${i}" title="Убрать условие" aria-label="Убрать условие">✕</button></span>`).join('');
+}
+// подсказки по последнему токену: после «ключ=» — частые значения этого тега, иначе базовый список
+function updateSuggest(q){
+  const last = /\s$/.test(q) ? '' : (tokenize(q).pop() || ''), pre = q.slice(0, q.length - last.length);
+  const m = last.match(/^!?([^=<>~!]+?)(>=|<=|!=|=|~|>|<)/);
+  const items = m && S.tagIdx.has(m[1])
+    ? [...S.tagIdx.get(m[1])].sort((a,b) => b[1]-a[1]).slice(0, 50).map(([v,n]) => [m[0] + quoteVal(v), `${n} спанов`])
+    : S.sugBase;
+  $('searchList').innerHTML = items.map(([v,l]) => `<option value="${esc(pre + v)}" label="${esc(l)}">`).join('');
+}
+/* ---- ссылка на спан: #span=<id> — фокус на спане (путь до корня в крошках) + детали ---- */
+function applyHash(){
+  const m = location.hash.match(/span=([^&]+)/);
+  if (!m || !S.spans.length) return;
+  const id = decodeURIComponent(m[1]);
+  if (!S.byId.has(id)) { alert(`Спана ${id} в этом трейсе нет`); return; }
+  // по ссылке показываем поддерево целиком: разворачиваем всех потомков
+  for (const st = [id]; st.length;) { const x = st.pop(); S.collapsed.delete(x); (S.children.get(x)||[]).forEach(c => st.push(c.id)); }
+  focusSpan(id);
+  showDetails(id);
+  document.querySelector(`.row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({block: 'center'});
+}
+window.addEventListener('hashchange', applyHash);
+function windowSpans(filtered){
+  const res = [];
+  for (const s of S.spans) {
+    if (s.end < S.winStart || s.start > S.winEnd) continue;
+    if (filtered && !passesFilters(s)) continue;
+    res.push(s);
+  }
+  return res;
+}
+
+/* ============================== мини-карта ============================== */
+const mm = $('minimap'), mctx = mm.getContext('2d');
+let mmRect = null;
+function xOf(t){ return mmRect.x0 + (t - S.t0)/(S.t1 - S.t0) * (mmRect.x1 - mmRect.x0); }
+function tOf(px){ return S.t0 + (px - mmRect.x0)/(mmRect.x1 - mmRect.x0) * (S.t1 - S.t0); }
+function drawMinimap(){
+  const dpr = window.devicePixelRatio || 1;
+  const W = mm.clientWidth, H = mm.clientHeight;
+  if (!W || !H) return;
+  if (mm.width !== Math.round(W*dpr)) { mm.width = Math.round(W*dpr); mm.height = Math.round(H*dpr); }
+  mctx.setTransform(dpr,0,0,dpr,0,0);
+  mctx.clearRect(0,0,W,H);
+  const pad = 10;
+  mmRect = { x0: pad, x1: W - pad, y0: 6, y1: H - 16 };
+  if (!S.spans.length) return;
+
+  let maxDepth = 1;
+  const depth = new Map();
+  const stack = S.spans.filter(s => !s.parent || !S.byId.has(s.parent)).map(s => [s,0]);
+  while (stack.length) {
+    const [s,d] = stack.pop();
+    depth.set(s.id, d); if (d+1 > maxDepth) maxDepth = d+1;
+    for (const c of (S.children.get(s.id)||[])) stack.push([c, d+1]);
+  }
+  const yOf = d => mmRect.y0 + (d/maxDepth)*(mmRect.y1 - mmRect.y0 - 4) + 2;
+
+  // плотность стартов спанов — фоновая гистограмма, видно «где жарко»
+  const bins = Math.max(1, Math.floor((mmRect.x1 - mmRect.x0)/2));
+  const hist = new Float64Array(bins); let hmax = 1;
+  for (const s of S.spans) {
+    const i = Math.min(bins-1, Math.floor((s.start - S.t0)/(S.t1 - S.t0) * bins));
+    if (++hist[i] > hmax) hmax = hist[i];
+  }
+  mctx.fillStyle = '#243046';
+  const bw = (mmRect.x1 - mmRect.x0)/bins;
+  for (let i=0;i<bins;i++) if (hist[i]) {
+    const h = Math.max(2, Math.log1p(hist[i])/Math.log1p(hmax) * (mmRect.y1 - mmRect.y0));  // лог: одиночные спаны тоже видно
+    mctx.fillRect(mmRect.x0 + i*bw, mmRect.y1 - h, Math.max(1, bw-.5), h);
+  }
+
+  mctx.lineWidth = 1.5;
+  for (const s of S.spans) {
+    if (s.err) continue;
+    const x0 = xOf(s.start), x1 = Math.max(x0 + 0.7, xOf(s.end));
+    mctx.strokeStyle = svcColor(s.svc); mctx.globalAlpha = .7;
+    const y = yOf(depth.get(s.id)||0);
+    mctx.beginPath(); mctx.moveTo(x0, y); mctx.lineTo(x1, y); mctx.stroke();
+  }
+  mctx.globalAlpha = 1; mctx.strokeStyle = '#ff6b6b'; mctx.lineWidth = 2;
+  for (const s of S.spans) {                   // ошибки поверх всего остального
+    if (!s.err) continue;
+    const x0 = xOf(s.start), x1 = Math.max(x0 + 1.5, xOf(s.end)), y = yOf(depth.get(s.id)||0);
+    mctx.beginPath(); mctx.moveTo(x0, y); mctx.lineTo(x1, y); mctx.stroke();
+  }
+
+  // «линза» окна: снаружи затемнено, внутри — янтарная рамка с ручками по краям
+  const a = xOf(S.winStart), b = Math.max(a + 2, xOf(S.winEnd));
+  mctx.fillStyle = 'rgba(15,20,28,.74)';
+  mctx.fillRect(0, 0, a, H); mctx.fillRect(b, 0, W - b, H);
+  mctx.fillStyle = 'rgba(240,180,76,.08)'; mctx.fillRect(a, 0, b - a, H - 16);
+  mctx.strokeStyle = '#f0b44c'; mctx.lineWidth = 1;
+  mctx.strokeRect(a + .5, .5, b - a - 1, H - 17);
+  mctx.fillStyle = '#f0b44c';
+  const hy = (H - 16)/2 - 9;
+  mctx.fillRect(a - 2, hy, 4, 18); mctx.fillRect(b - 2, hy, 4, 18);
+
+  mctx.font = '10px ui-monospace,"SF Mono",Menlo,monospace'; mctx.textBaseline = 'top';
+  mctx.fillStyle = '#263142'; mctx.fillRect(0, H-16, W, 1);
+  mctx.fillStyle = '#5b6779';
+  const step = (S.t1 - S.t0)/6;
+  for (let i=0;i<=6;i++){
+    const t = S.t0 + step*i, x = xOf(t);
+    mctx.fillText(fmtClock(t).slice(0,8), Math.min(W-54, Math.max(4, x-24)), H-12);
+    mctx.fillRect(x, H-16, 1, 3);
+  }
+  mctx.fillStyle = '#f0b44c';
+  const lbl = fmtDur(S.winEnd - S.winStart);
+  mctx.fillText(lbl, b + 6 + 40 < W ? b + 6 : Math.max(2, a - 6 - mctx.measureText(lbl).width), 4);
+}
+
+let drag = null;
+function mmHit(e){
+  const r = mm.getBoundingClientRect(), px = e.clientX - r.left;
+  const a = xOf(S.winStart), b = xOf(S.winEnd);
+  if (Math.abs(px-a) < 6) return 'left';
+  if (Math.abs(px-b) < 6) return 'right';
+  if (px > a && px < b) return 'mid';
+  return 'new';
+}
+mm.addEventListener('pointerdown', e => {
+  if (!S.spans.length) return;
+  mm.setPointerCapture(e.pointerId);
+  drag = { mode: mmHit(e), px: e.clientX, a: S.winStart, b: S.winEnd };
+});
+mm.addEventListener('pointermove', e => {
+  if (!drag) { if (S.spans.length) mm.style.cursor = ({left:'ew-resize',right:'ew-resize',mid:'grab',new:'crosshair'})[mmHit(e)]; return; }
+  const px = e.clientX - mm.getBoundingClientRect().left;
+  const dt = tOf(px) - tOf(drag.px - mm.getBoundingClientRect().left);
+  if (drag.mode === 'left')      S.winStart = Math.min(drag.a + dt, drag.b - 50);
+  else if (drag.mode === 'right') S.winEnd  = Math.max(drag.b + dt, drag.a + 50);
+  else if (drag.mode === 'mid')  { S.winStart = drag.a + dt; S.winEnd = drag.b + dt; }
+  else {
+    const t = tOf(px), t0 = tOf(drag.px - mm.getBoundingClientRect().left);
+    S.winStart = Math.min(t0, t); S.winEnd = Math.max(t0, t);
+  }
+  S.winStart = Math.max(S.t0, S.winStart); S.winEnd = Math.min(S.t1, S.winEnd);
+  if (S.winEnd - S.winStart < 50) S.winEnd = Math.min(S.t1, S.winStart + 50);
+  syncWinInputs(); drawMinimap(); renderAll(); updateStats();
+});
+mm.addEventListener('pointerup', () => { drag = null; });
+mm.addEventListener('dblclick', () => { const c=(S.winStart+S.winEnd)/2, w=(S.winEnd-S.winStart)/4; setWindow(c-w, c+w, {keep:true}); });
+
+/* ============================== waterfall ============================== */
+function niceTicks(a, b, n=8){
+  const w = b - a, raw = w/n;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const unit = [1,2,5,10].map(k => k*pow).find(k => k >= raw) || 10*pow;
+  const ticks = [];
+  for (let t = Math.ceil(a/unit)*unit; t <= b; t += unit) ticks.push(t);
+  return ticks;
+}
+function renderAxis(){
+  const w = S.winEnd - S.winStart;
+  const ticks = niceTicks(0, w, 6).map(o => S.winStart + o);   // круглые смещения: 0, 2s, 4s…
+  const pct = t => ((t-S.winStart)/w*100).toFixed(3) + '%';
+  // подпись тика: смещение от начала окна — короче и читается быстрее, чем часы
+  $('axisTicks').innerHTML = ticks.map(t =>
+    `<div class="tick mono" style="left:${pct(t)}" title="${fmtClock(t)}">${t === S.winStart ? fmtClock(t) : '+' + fmtDur(t - S.winStart)}</div>`
+  ).join('');
+  // те же тики — вертикальной сеткой в колонке баров (один gradient на все строки)
+  $('rows').style.setProperty('--grid', ticks.length ? 'linear-gradient(90deg,' + ticks.map(t =>
+    `transparent ${pct(t)}, #1e2836 ${pct(t)}, #1e2836 calc(${pct(t)} + 1px), transparent calc(${pct(t)} + 1px)`
+  ).join(',') + ')' : 'none');
+}
+function orderedInWindow(){
+  const sel = windowSpans(true);
+  const set = new Set(sel.map(s => s.id));
+  let roots;
+  if (S.focusId) {
+    const f = S.byId.get(S.focusId);
+    // фокус-спан — единственный корень (даже если сам вне окна/фильтров)
+    roots = f ? [f] : sel.filter(s => !s.parent || !set.has(s.parent)).sort((a,b) => a.start - b.start);
+  } else {
+    roots = sel.filter(s => !s.parent || !set.has(s.parent)).sort((a,b) => a.start - b.start);
+  }
+  const ordered = [];
+  let d0 = 0;
+  if (S.focusId && roots[0]) {
+    // над поддеревом — путь от корня трейса до фокус-спана
+    const chain = [];
+    for (let p = S.byId.get(roots[0].parent); p; p = S.byId.get(p.parent)) chain.unshift(p);
+    chain.forEach((p, i) => ordered.push([p, i]));
+    d0 = chain.length;
+  }
+  (function dfs(list, d){
+    for (const s of list) {
+      ordered.push([s, d]);
+      if (S.collapsed.has(s.id)) continue;           // свёрнут — детей не обходим
+      const kids = (S.children.get(s.id)||[]).filter(c => S.focusId ? true : set.has(c.id));
+      if (S.focusId) {
+        // в фокусе дети обязаны проходить фильтры, но не обязаны попадать в окно
+        dfs(kids.filter(c => passesFilters(c)), d+1);
+      } else {
+        dfs(kids, d+1);
+      }
+    }
+  })(roots, d0);
+  return ordered;
+}
+/* ---- фокус («провалиться» / «подняться») ---- */
+function focusSpan(id){
+  const s = S.byId.get(id);
+  if (!s) return;
+  if (!S.focusId) S.savedWin = { a: S.winStart, b: S.winEnd };   // запоминаем один раз
+  S.focusId = id;
+  S.selId = null; $('details').classList.remove('open');
+  const pad = Math.max(25, s.dur * 0.02);
+  setWindow(s.start - pad, s.end + pad, {keep:true});
+  renderFocusbar();
+}
+function focusUp(){
+  const s = S.byId.get(S.focusId);
+  if (!s || !s.parent || !S.byId.has(s.parent)) { exitFocus(); return; }
+  focusSpan(s.parent);
+}
+function exitFocus(){
+  if (!S.focusId) return;
+  if (/span=/.test(location.hash)) history.replaceState(null, '', location.href.split('#')[0]);
+  S.focusId = null;
+  $('focusbar').classList.remove('on');
+  if (S.savedWin) { const w = S.savedWin; S.savedWin = null; setWindow(w.a, w.b, {keep:true}); }
+  else renderAll();
+}
+function renderFocusbar(){
+  const bar = $('focusbar');
+  if (!S.focusId) { bar.classList.remove('on'); return; }
+  const chain = [];
+  let cur = S.byId.get(S.focusId);
+  while (cur) { chain.unshift(cur); cur = cur.parent ? S.byId.get(cur.parent) : null; }
+  bar.innerHTML =
+    `<span class="lbl">Поддерево</span>` +
+    chain.map((s, i) => i === chain.length-1
+      ? `<span class="crumb cur" title="${esc(s.svc)}: ${esc(s.op)}">${esc(s.op)}</span>`
+      : `<span class="crumb" data-fid="${esc(s.id)}" title="Подняться к ${esc(s.svc)}: ${esc(s.op)}">${esc(s.op)}</span>`
+    ).join('<span class="sep">/</span>') +
+    `<span class="grow"></span>` +
+    (chain.length > 1 ? `<button id="fbUp" title="На уровень выше">На уровень выше</button>` : ``) +
+    `<button id="fbExit" title="Выйти из поддерева (Esc)">Выйти</button>`;
+  bar.classList.add('on');
+  bar.querySelectorAll('.crumb[data-fid]').forEach(el => el.onclick = () => focusSpan(el.dataset.fid));
+  const up = $('fbUp'); if (up) up.onclick = focusUp;
+  $('fbExit').onclick = exitFocus;
+}
+function renderRows(){
+  const rowsEl = $('rows');
+  const w = S.winEnd - S.winStart;
+  const ordered = orderedInWindow();
+  S.truncated = Math.max(0, ordered.length - S.limit);
+  const shown = ordered.slice(0, S.limit);
+  const crit = S.critOn ? critPath(S.focusId ? [S.byId.get(S.focusId)] : ordered.filter(([,d]) => d === 0).map(([s]) => s)) : null;
+
+  const parts = shown.map(([s, d]) => {
+    const left = Math.max(0, (s.start - S.winStart)/w)*100;
+    const right = Math.min(100, (s.end - S.winStart)/w)*100;
+    const width = Math.max(0.15, right - left);
+    const clipped = s.start < S.winStart || s.end > S.winEnd;
+    const zero = s.dur === 0;
+    const c = svcColor(s.svc);
+    const kids = (S.children.get(s.id)||[]).filter(passesFilters);
+    const isCollapsed = S.collapsed.has(s.id);
+    const hasKids = kids.length > 0;
+    const g = s.gap?.lvl ? ` gap-${s.gap.lvl}` : '';
+    const gapTitle = s.gap?.lvl === 'none' ? ' title="FE-запрос без бэкенда в трейсе: traceparent не дошёл (CORS, прокси, сторонний домен)"'
+                   : s.gap?.lvl ? ` title="без бэкенда ${fmtDur(s.gap.gap)} из ${fmtDur(s.dur)}"` : '';
+    return `<div class="row${d===0?' depth1':''}${s.err?' iserr':''}${s.fe?' isfe':''}${s.id===S.selId?' sel':''}${crit ? (crit.has(s.id) ? ' crit' : ' nocrit') : ''}" data-id="${esc(s.id)}">
+      <span class="tw${hasKids?'':' leaf'}" data-tw="${esc(s.id)}" title="${hasKids ? (isCollapsed?'Развернуть':'Свернуть') + ' (' + kids.length + ')' : ''}">${hasKids ? (isCollapsed?'▸':'▾') : ''}</span>
+      <div class="svc" style="--d:${d}">
+        <i class="dot" style="background:${c}"></i>${s.fe ? FE_ICON : ''}<span>${esc(s.svc)}</span></div>
+      <div class="op" title="${esc(s.op)}">${esc(s.op)}</div>
+      <div class="t mono">${fmtClock(s.start)}</div>
+      <div class="d mono" title="собственное время ${fmtDur(s.self)}">${fmtDur(s.dur)}</div>
+      <div class="barcell"><div class="bar${zero?' zero':''}${clipped?' clipped':''}${s.err?' errbar':''}${g}"${gapTitle}
+        style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%;--svc-color:${c}${s.gap?.bg ? ';--cover:' + s.gap.bg : ''}"></div></div>
+    </div>`;
+  });
+  rowsEl.innerHTML = parts.join('') || `<div class="empty-rows">
+    ${S.focusId ? 'В этом поддереве нет спанов под текущие фильтры. Ослабь фильтры или выйди из поддерева.' :
+      'В окне нет спанов под текущие фильтры. Расширь окно (−) или сбрось фильтры.'}</div>`;
+  const cap = $('cap');
+  if (S.truncated > 0) {
+    cap.style.display = 'flex';
+    $('capText').textContent = `показано ${S.limit} из ${ordered.length} спанов окна — сузь окно, включи фильтр или покажи ещё`;
+  } else cap.style.display = 'none';
+}
+function renderAll(){ renderAxis(); renderRows(); }
+
+$('rows').addEventListener('click', e => {
+  const tw = e.target.closest('.tw');
+  if (tw && tw.dataset.tw) {                 // свернуть/развернуть узел
+    const id = tw.dataset.tw;
+    if (S.collapsed.has(id)) S.collapsed.delete(id); else S.collapsed.add(id);
+    renderRows();
+    return;
+  }
+  const rowEl = e.target.closest('.row');
+  if (!rowEl) return;
+  showDetails(rowEl.dataset.id);
+});
+function showDetails(id){
+  S.selId = id;
+  const s = S.byId.get(id);
+  if (!s) return;
+  const d = $('details');
+  const proc = s.raw.processTags || {};
+  const rowsT = [...Object.entries(s.tags).map(([k,v]) => [k, v, false]),
+                 ...Object.entries(proc).filter(([k]) => !(k in s.tags)).map(([k,v]) => [k, v, true])];
+  const tags = rowsT.map(([k,v,isProc]) => {
+    const sv = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v);
+    const btns = typeof v === 'object' ? '' :
+      `<button class="ghost" data-tf="+" data-k="${esc(k)}" data-v="${esc(sv)}" title="Только спаны с ${esc(k)}=${esc(sv)}">+</button><button class="ghost" data-tf="-" data-k="${esc(k)}" data-v="${esc(sv)}" title="Скрыть спаны с ${esc(k)}=${esc(sv)}">−</button>`;
+    return `<tr${isProc ? ' class="proc"' : ''}><td class="k"${isProc ? ' title="processTags — атрибут ресурса (процесса)"' : ''}>${esc(k)}</td><td>${esc(sv)}</td><td class="act">${btns}</td></tr>`;
+  }).join('');
+  const nKids = (S.children.get(s.id)||[]).length;
+  const nTags = rowsT.length;
+  d.innerHTML = `
+    <div class="dhead">
+      <div class="dtop">
+        <span class="svcname"><i style="background:${svcColor(s.svc)}"></i>${esc(s.svc)}${s.fe ? `<span class="fe-badge" title="${FE_TITLE}">${FE_ICON}Frontend</span>` : ''}</span>
+        <button class="ghost" id="detClose" title="Закрыть (Esc)" aria-label="Закрыть">✕</button>
+      </div>
+      <h3 class="${s.err?'err':''}">${esc(s.op)}</h3>
+      <div class="facts">
+        <div><b class="mono">${fmtDur(s.dur)}</b><span>длительность</span></div>
+        <div><b class="mono">+${fmtDur(s.start - S.t0)}</b><span>от начала трейса</span></div>
+        <div><b class="mono">${fmtDur(s.self)}</b><span>собственное (${Math.round(s.dur ? s.self/s.dur*100 : 0)}%)</span></div>
+        <div><b>${nKids}</b><span>дочерних</span></div>
+      </div>
+      ${!s.gap ? '' : s.gap.lvl === 'none'
+        ? `<p class="gapnote">Бэкенда под этим запросом в трейсе нет: traceparent не дошёл (CORS, прокси, сторонний домен) — разницу FE/backend посчитать нельзя.</p>`
+        : `<p class="gapnote ${s.gap.lvl}">FE ${fmtDur(s.dur)} = сеть/браузер <b>${fmtDur(s.gap.gap)}</b> (${Math.round(s.dur ? s.gap.gap/s.dur*100 : 0)}%) + backend ${fmtDur(s.gap.cover)}</p>`}
+      <button id="detFocus" ${nKids ? '' : 'disabled'} title="Показать только поддерево этого спана; окно станет равным его длительности">Открыть поддерево</button>
+      <button id="detLink" class="ghost" title="Скопировать ссылку: откроет трейс сразу на этом спане">Ссылка на спан</button>
+    </div>
+    <div class="dbody">
+      <details open><summary>Идентификаторы и время</summary>
+        <div class="kv">
+          <span class="k">start</span><span class="mono">${new Date(s.start).toISOString()}</span>
+          <span class="k">spanId</span><span class="mono">${esc(s.id)}</span>
+          <span class="k">parentId</span><span class="mono">${esc(s.parent || 'нет, это корень')}</span>
+          ${s.err ? '<span class="k">статус</span><span style="color:var(--err)">ошибка</span>' : ''}
+        </div>
+      </details>
+      <details open><summary>Теги (${nTags})</summary>
+        <table>${tags || '<tr><td class="k">Тегов нет</td><td></td></tr>'}</table>
+      </details>
+      <details><summary>Исходный JSON</summary>
+        <pre>${esc(JSON.stringify(s.raw, null, 2))}</pre>
+      </details>
+    </div>`;
+  d.classList.add('open');
+  $('detClose').onclick = () => { d.classList.remove('open'); S.selId = null; renderRows(); };
+  $('detFocus').onclick = () => focusSpan(id);
+  $('detLink').onclick = e => {
+    const url = location.href.split('#')[0] + '#span=' + encodeURIComponent(id);
+    history.replaceState(null, '', url);
+    navigator.clipboard?.writeText(url).then(() => { e.target.textContent = 'Скопировано'; setTimeout(() => e.target.textContent = 'Ссылка на спан', 1200); });
+  };
+  renderRows();
+}
+
+/* ---- «Почему медленно»: по поддереву фокуса (целиком, без окна) или по спанам окна с фильтрами ---- */
+function analysisScope(){
+  if (!S.focusId) return windowSpans(true);
+  const res = [], st = [S.byId.get(S.focusId)];
+  while (st.length) { const x = st.pop(); res.push(x); st.push(...(S.children.get(x.id)||[])); }
+  return res.filter(passesFilters);
+}
+function renderAnalysis(){
+  const list = analysisScope();
+  const d = $('details');
+  S.selId = null;
+  const f = S.focusId && S.byId.get(S.focusId);
+  const wall = f ? f.dur : S.winEnd - S.winStart;
+  const pct = ms => wall > 0 ? Math.round(ms / wall * 100) + '%' : '';
+  const top = [...list].sort((a,b) => b.self - a.self).slice(0, 10);
+  // группы «сервис · операция»: вызовы, сумма, self, max и максимум повторов под одним родителем
+  const g = new Map();
+  for (const s of list) {
+    const k = s.svc + '\u0000' + s.op;
+    const e = g.get(k) || { svc: s.svc, op: s.op, n: 0, dur: 0, self: 0, max: 0, per: new Map() };
+    e.n++; e.dur += s.dur; e.self += s.self; e.max = Math.max(e.max, s.dur);
+    e.per.set(s.parent, (e.per.get(s.parent)||0) + 1);
+    g.set(k, e);
+  }
+  const groups = [...g.values()].map(e => ({ ...e, rep: Math.max(...e.per.values()) }))
+                                .sort((a,b) => b.self - a.self).slice(0, 30);
+  const crit = critPath(f ? [f] : list.filter(s => !s.parent || !S.byId.has(s.parent)));
+  const critSelf = list.filter(s => crit.has(s.id)).sort((a,b) => b.self - a.self).slice(0, 5);
+  d.innerHTML = `
+    <div class="dhead">
+      <div class="dtop"><span class="svcname">${f ? 'Поддерево' : 'Окно'} · ${list.length} спанов</span>
+        <button class="ghost" id="detClose" title="Закрыть (Esc)" aria-label="Закрыть">✕</button></div>
+      <h3>Почему медленно${f ? ': ' + esc(f.op) : ''}</h3>
+      <div class="facts">
+        <div><b class="mono">${fmtDur(wall)}</b><span>${f ? 'длительность' : 'ширина окна'}</span></div>
+        <div><b>${crit.size}</b><span>на критическом пути</span></div>
+      </div>
+    </div>
+    <div class="dbody an">
+      <h4>Критический путь — где больше всего собственного времени</h4>
+      <table>${critSelf.map(s => `<tr data-goto="${esc(s.id)}"><td>${esc(s.svc)} · ${esc(s.op)}</td><td class="n">${fmtDur(s.self)}</td><td class="n">${pct(s.self)}</td></tr>`).join('')}</table>
+      <h4>Топ-10 спанов по собственному времени</h4>
+      <table>${top.map(s => `<tr data-goto="${esc(s.id)}"><td>${esc(s.svc)} · ${esc(s.op)}</td><td class="n">${fmtDur(s.self)}</td><td class="n">${pct(s.self)}</td></tr>`).join('')}</table>
+      <h4>Повторяющиеся операции (клик — фильтр по операции)</h4>
+      <table><tr><th>операция</th><th>вызовов</th><th>сумма</th><th>self</th><th>max</th></tr>
+      ${groups.map(e => `<tr data-q="${esc(e.op)}"><td>${esc(e.svc)} · ${esc(e.op)}${e.n >= N1_MIN ? `<span class="n1" title="${e.n} одинаковых вызовов, до ${e.rep} под одним родителем — N+1 или цикл">×${e.n}</span>` : ''}</td>
+        <td class="n">${e.n}</td><td class="n">${fmtDur(e.dur)}</td><td class="n">${fmtDur(e.self)}</td><td class="n">${fmtDur(e.max)}</td></tr>`).join('')}</table>
+      <p style="color:var(--faint);font-size:11px">Self — время спана без детей (параллельные дети не считаются дважды). Сумма у вложенных/параллельных вызовов может превышать длительность.</p>
+    </div>`;
+  d.classList.add('open');
+  $('detClose').onclick = () => d.classList.remove('open');
+  d.querySelectorAll('tr[data-goto]').forEach(tr => tr.onclick = () => {
+    const id = tr.dataset.goto;
+    for (let p = S.byId.get(S.byId.get(id).parent); p; p = S.byId.get(p.parent)) S.collapsed.delete(p.id);
+    showDetails(id);
+    document.querySelector(`.row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({block: 'center'});
+  });
+  d.querySelectorAll('tr[data-q]').forEach(tr => tr.onclick = () => {
+    // в поддереве фильтр срезал бы ветки целиком — выходим из фокуса, окно оставляем
+    if (S.focusId) { S.focusId = null; S.savedWin = null; renderFocusbar(); history.replaceState(null, '', location.href.split('#')[0]); }
+    setQuery(quoteVal(tr.dataset.q)); renderAnalysis();
+  });
+  renderRows();
+}
+$('btnWhy').addEventListener('click', renderAnalysis);
+$('critOn').addEventListener('change', e => { S.critOn = e.target.checked; renderRows(); });
+
+/* ============================== чипы сервисов ============================== */
+function renderChips(){
+  const cnt = new Map();
+  for (const s of S.spans) cnt.set(s.svc, (cnt.get(s.svc)||0)+1);
+  $('chips').innerHTML = [...cnt.entries()].sort((a,b) => b[1]-a[1]).map(([name,n]) =>
+    `<span class="chip${S.off.has(name)?' off':''}" data-svc="${esc(name)}" title="клик — вкл/выкл сервис">
+       <i class="dot" style="background:${svcColor(name)}"></i>${esc(name)}
+       <span class="cnt">${n}</span></span>`).join('');
+  $('btnChipsReset').classList.toggle('hidden', S.off.size === 0);
+  $('btnChipsNone').classList.toggle('hidden', S.off.size === cnt.size);
+}
+$('chips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  const name = chip.dataset.svc;
+  if (S.off.has(name)) S.off.delete(name); else S.off.add(name);
+  renderChips(); renderAll(); updateStats();
+});
+$('btnChipsNone').addEventListener('click', () => {
+  S.off = new Set(S.spans.map(s => s.svc));
+  renderChips(); renderAll(); updateStats();
+});
+$('btnChipsReset').addEventListener('click', () => {
+  S.off.clear();
+  renderChips(); renderAll(); updateStats();
+});
+$('btnCollapseAll').addEventListener('click', () => {
+  // свернуть каждый узел, у которого есть дети, проходящие фильтры
+  for (const [pid, kids] of S.children) {
+    if (kids.some(passesFilters)) S.collapsed.add(pid);
+  }
+  renderRows();
+});
+$('btnExpandAll').addEventListener('click', () => {
+  S.collapsed.clear();
+  renderRows();
+});
+
+/* ============================== экспорт окна ============================== */
+function exportWindow(){
+  const list = windowSpans(true).map(s => s.raw);
+  const blob = new Blob([JSON.stringify({
+    traceId: S.traceId,
+    window: { startMs: S.winStart, endMs: S.winEnd },
+    spanCount: list.length, spans: list,
+  }, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `trace-window-${S.traceId || 'x'}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ============================== события ============================== */
+function readFile(f){
+  const r = new FileReader();
+  r.onload = () => {
+    try { loadTrace(JSON.parse(r.result), f.name); }
+    catch (err) { alert(`${f.name}: ${err.message}`); }
+  };
+  r.readAsText(f);
+}
+$('fileInput').addEventListener('change', e => { handleFiles(Array.from(e.target.files || [])); e.target.value = ''; });
+function handleFiles(files){
+  if (!files.length) return;
+  if (files.length === 1) { readFile(files[0]); return; }
+  // несколько сегментов: merge в браузере
+  let spans = [], tids = new Set(), pending = files.length;
+  files.forEach(f => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        let s = Array.isArray(d) ? d : (Array.isArray(d.spans) ? d.spans : d.segments?.flatMap(g => g.spans||[]));
+        if (d.traceId) tids.add(String(d.traceId));
+        spans = spans.concat(s || []);
+      } catch (err) { alert(f.name + ': ' + err.message); }
+      if (--pending === 0) {
+        try { loadTrace({traceId: [...tids][0]||'', spans}, files.map(x=>x.name).join(', ')); }
+        catch (err) { alert('Объединение: ' + err.message); }
+      }
+    };
+    r.readAsText(f);
+  });
+}
+document.addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragover'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragover'); });
+document.addEventListener('drop', e => {
+  e.preventDefault(); document.body.classList.remove('dragover');
+  handleFiles(Array.from(e.dataTransfer.files||[]));
+});
+$('btnDemo').addEventListener('click', async () => {
+  try { loadTrace(await fetchJson('trace.json'), 'trace.json'); }
+  catch (err) { alert('trace.json рядом со страницей не найден — открой её через http-сервер (см. README) или перетащи файл'); }
+});
+$('btnExport').addEventListener('click', exportWindow);
+$('traceIdBtn').addEventListener('click', e => {
+  if (!S.traceId) return;
+  navigator.clipboard?.writeText(S.traceId).then(() => {
+    e.target.textContent = 'скопировано';
+    setTimeout(() => e.target.textContent = S.traceId, 1000);
+  });
+});
+$('btnApplyWin').addEventListener('click', () => {
+  const a = parseFloat($('winStart').value)*1000, w = parseFloat($('winLen').value)*1000;
+  if (isNaN(a) || isNaN(w) || w <= 0) return;
+  setWindow(S.t0 + a, S.t0 + a + w);
+});
+['winStart','winLen'].forEach(id => $(id).addEventListener('keydown', e => { if (e.key === 'Enter') $('btnApplyWin').click(); }));
+$('btnPanL').addEventListener('click', () => panWindow(-0.5));
+$('btnPanR').addEventListener('click', () => panWindow(0.5));
+$('btnZoomIn').addEventListener('click', () => zoomWindow(0.5));
+$('btnZoomOut').addEventListener('click', () => zoomWindow(2));
+$('btnFit').addEventListener('click', fitWindow);
+$('btnHot').addEventListener('click', () => hotWindow(15000));
+$('btnErr').addEventListener('click', errWindow);
+$('btnWin12').addEventListener('click', () => {
+  const c = (S.winStart+S.winEnd)/2; setWindow(c-6000, c+6000);
+});
+$('btnMore').addEventListener('click', () => { S.limit += 1500; renderRows(); });
+$('search').addEventListener('input', e => setQuery(e.target.value));
+$('conds').addEventListener('click', e => {
+  const b = e.target.closest('[data-ci]'); if (!b) return;
+  setQuery(S.conds.filter((_, i) => i !== +b.dataset.ci).map(c => c.raw).join(' '));
+});
+$('details').addEventListener('click', e => {         // + / − у тега: дописать условие в поиск
+  const b = e.target.closest('[data-tf]'); if (!b) return;
+  const tok = (b.dataset.tf === '-' ? '!' : '') + b.dataset.k + '=' + quoteVal(b.dataset.v);
+  const cur = $('search').value.trim();
+  if (!tokenize(cur).includes(tok)) setQuery(cur ? cur + ' ' + tok : tok);
+});
+$('minDur').addEventListener('change', e => { S.minDur = +e.target.value; renderAll(); updateStats(); });
+$('errOnly').addEventListener('change', e => { S.errOnly = e.target.checked; renderAll(); updateStats(); });
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (!S.spans.length) return;
+  if (e.key === 'Escape') { exitFocus(); $('details').classList.remove('open'); S.selId = null; renderRows(); }
+  else if (e.key === 'ArrowLeft') panWindow(-0.5);
+  else if (e.key === 'ArrowRight') panWindow(0.5);
+  else if (e.key === '+' || e.key === '=') zoomWindow(0.5);
+  else if (e.key === '-') zoomWindow(2);
+  else if (e.key === 'f' || e.key === 'F' || e.key === 'а' || e.key === 'А') fitWindow();
+  else if (e.key === 'h' || e.key === 'H' || e.key === 'р' || e.key === 'Р') hotWindow(15000);
+});
+window.addEventListener('resize', () => { if (S.spans.length) drawMinimap(); });
+
+/* автозагрузка: ?trace=<url> или trace.json рядом (нужен http) */
+(function autoload(){
+  const m = location.search.match(/trace=([^&]+)/);
+  if (m) { fetchJson(decodeURIComponent(m[1])).then(d => loadTrace(d, m[1])).catch(() => {}); return; }
+  if (location.protocol.startsWith('http')) {
+    fetchJson('trace.json').then(d => loadTrace(d, 'trace.json')).catch(() => {});
+  }
+})();
+
+/* хук для тестов/отладки */
+window.__viewer = { S, setWindow, hotWindow, fitWindow, errWindow, windowSpans, loadTrace,
+                    focusSpan, focusUp, exitFocus };
+</script>
+</body>
+</html>
