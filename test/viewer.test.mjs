@@ -105,3 +105,49 @@ test('fmtDur: 2 минуты — «2m0s», а не «1m60s»', async () => {
   assert.ok(txt.includes('2m0s') && !txt.includes('1m60s'));
   await page.close();
 });
+
+const traceJson = async () => JSON.parse(await readFile(join(ROOT, 'trace.json'), 'utf8'));
+async function openSfx(path = 'trace_viewer.html?from=sfx') {
+  const page = await browser.newPage();
+  const errors = [], dialogs = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+  await page.goto(`${base}/${path}`);
+  await page.waitForFunction(() => window.__viewer);
+  return { page, errors, dialogs };
+}
+
+test('?from=sfx: принимает трейс по postMessage, демо не грузит', async () => {
+  const { page, errors } = await openSfx();
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.__viewer.S.spans.length), 0);
+  const spans = (await traceJson()).spans.slice(0, 50);
+  await page.evaluate(spans => window.postMessage({ type: 'sfx-trace', name: 'x', data: { traceId: 't1', spans } }, '*'), spans);
+  await page.waitForFunction(() => window.__viewer.S.spans.length > 0);
+  assert.equal(await page.evaluate(() => window.__viewer.S.spans.length), 50);
+  assert.equal(await page.evaluate(() => window.__viewer.S.traceId), 't1');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test('?from=sfx: сообщение из чужого окна игнорируется', async () => {
+  const { page } = await openSfx();
+  const spans = (await traceJson()).spans.slice(0, 50);
+  await page.evaluate(spans => {
+    const f = document.createElement('iframe');
+    document.body.append(f);
+    f.contentWindow.eval(`parent.postMessage(${JSON.stringify({ type: 'sfx-trace', name: 'evil', data: { traceId: 'evil', spans } })}, '*')`);
+  }, spans);
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.__viewer.S.spans.length), 0);
+  await page.close();
+});
+
+test('?from=sfx: битые данные — alert, без падения', async () => {
+  const { page, errors, dialogs } = await openSfx();
+  await page.evaluate(() => window.postMessage({ type: 'sfx-trace', name: 'x', data: 42 }, '*'));
+  await page.waitForTimeout(300);
+  assert.equal(dialogs.length, 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
