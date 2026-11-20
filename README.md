@@ -35,6 +35,16 @@ python3 download_trace.py --trace-id <TRACE_ID> -o trace.json
 # сам скачает ВСЕ сегменты трейса и склеит их
 ```
 
+### Вариант В: прямо со страницы трейса (без Python и токена)
+
+1. Открой трейс в SignalFx (`…/#/apm/traces/<traceId>`), DevTools → Console.
+2. Вставь содержимое `extension/sfx-grab.js` и нажми Enter.
+3. Скрипт под твоей сессией скачает все сегменты, склеит их, сохранит `trace-<traceId>.json` в «Загрузки»,
+   спросит подтверждение и откроет вьюер на GitHub Pages — трейс передаётся из вкладки во вкладку, в сеть не уходит.
+
+Свой шлюз API или заголовок авторизации — до вставки: `window.SFX_GRAB = { apiBase: 'https://…', headers: { 'X-SF-Token': '…' } }`.
+Если браузер заблокировал окно — перетащи сохранённый файл на вьюер. Позже это станет расширением браузера.
+
 ## Токены (3 способа, приоритет сверху вниз)
 
 | Способ | Как | Когда удобен |
@@ -112,7 +122,8 @@ npm test        # node:test + Playwright: ссылка #span, self time, кри�
 
 - `trace_viewer.html` — оффлайн UI (открывается без сервера)
 - `index.html` — редирект на `trace_viewer.html` для GitHub Pages (сохраняет `#span=…`)
-- `test/viewer.test.mjs` — браузерные тесты на демо-трейсе
+- `test/viewer.test.mjs` — браузерные тесты на демо-трейсе (и поддельном API SignalFx для `sfx-grab.js`)
+- `extension/sfx-grab.js` — выгрузка трейса со страницы SignalFx во вьюер (сниппет для консоли, будущее расширение)
 - `download_trace.py` — загрузка через API / merge сегментов из UI
 - `make_synthetic_trace.py` — генератор демо-трейса (создаёт `trace.json`)
 - `trace.json` — синтетический демо-трейс (час, плотная 12s-операция в 14:40, вызвана из браузера web-ui — примеры подсветки FE/backend)

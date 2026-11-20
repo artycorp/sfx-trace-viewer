@@ -13,10 +13,21 @@ const ROOT_SPAN = '0000000000001034';   // POST /api/reports/monthly — кор�
 const DEEP_SPAN = '0000000000001036';   // третий уровень: 1034 → 1035 → 1036
 
 let server, browser, base;
+
+// поддельный API SignalFx: 2 сегмента с перекрытием в 10 спанов, второй — в форме {spans}; трейс 'bad' → 401
+async function fakeSfxApi(res, id, seg) {
+  if (id === 'bad') return res.writeHead(401).end();
+  const spans = JSON.parse(await readFile(join(ROOT, 'trace.json'), 'utf8')).spans, h = spans.length >> 1;
+  const body = { segments: ['s1', 's2'], s1: spans.slice(0, h + 10), s2: { spans: spans.slice(h) } }[seg];
+  if (!body) return res.writeHead(404).end();
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+}
 before(async () => {
   server = http.createServer(async (req, res) => {
     let path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, '');
     if (path === '/') path = '/index.html';
+    const api = path.match(/^\/v2\/apm\/trace\/([^/]+)\/([^/]+)$/);
+    if (api) return fakeSfxApi(res, api[1], api[2]);
     try {
       const body = await readFile(join(ROOT, path));
       res.writeHead(200, { 'content-type': TYPES[extname(path)] || 'application/octet-stream' }).end(body);
@@ -149,5 +160,38 @@ test('?from=sfx: битые данные — alert, без падения', asyn
   await page.waitForTimeout(300);
   assert.equal(dialogs.length, 1);
   assert.deepEqual(errors, []);
+  await page.close();
+});
+
+async function sfxPage(traceId) {
+  const page = await browser.newPage();
+  const dialogs = [];
+  page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+  await page.goto(`${base}/test/fake-sfx.html#/apm/traces/${traceId}`);
+  await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v }; }, `${base}/trace_viewer.html`);
+  const grab = () => page.addScriptTag({ path: join(ROOT, 'extension/sfx-grab.js') });
+  return { page, dialogs, grab };
+}
+
+test('sfx-grab: склеивает сегменты без дублей и открывает вьюер', async () => {
+  const total = (await traceJson()).spans.length;
+  const { page, dialogs, grab } = await sfxPage('abc');
+  const [viewer, download] = await Promise.all([page.waitForEvent('popup'), page.waitForEvent('download'), grab()]);
+  assert.equal(download.suggestedFilename(), 'trace-abc.json');
+  await viewer.waitForFunction(() => window.__viewer?.S.spans.length > 0);
+  assert.equal(await viewer.evaluate(() => window.__viewer.S.spans.length), total);
+  assert.equal(await viewer.evaluate(() => window.__viewer.S.traceId), 'abc');
+  assert.ok(dialogs.some(m => m.includes(`${total} спанов`)));
+  await viewer.close(); await page.close();
+});
+
+test('sfx-grab: 401 — ошибка про авторизацию, вьюер не открыт', async () => {
+  const { page, dialogs, grab } = await sfxPage('bad');
+  let popups = 0; page.on('popup', () => popups++);
+  await grab();
+  await page.waitForTimeout(500);
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0], /автори/);
+  assert.equal(popups, 0);
   await page.close();
 });
