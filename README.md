@@ -40,7 +40,7 @@ python3 download_trace.py --trace-id <TRACE_ID> -o trace.json
 1. Открой трейс в SignalFx (`…/#/apm/traces/<traceId>`), DevTools → Console.
 2. Вставь содержимое `extension/sfx-grab.js` и нажми Enter.
 3. Скрипт под твоей сессией скачает все сегменты, склеит их, сохранит `trace-<traceId>.json` в «Загрузки»,
-   спросит подтверждение и откроет вьюер на GitHub Pages — трейс передаётся из вкладки во вкладку, в сеть не уходит.
+   сразу откроет вьюер на GitHub Pages — трейс передаётся из вкладки во вкладку, в сеть не уходит.
 
 Токен сессии берётся сам из `localStorage['X-SF-TOKEN']` страницы SignalFx и уходит в заголовке `X-SF-Token`. Свой шлюз API или другой заголовок авторизации — до вставки: `window.SFX_GRAB = { apiBase: 'https://…', headers: { 'X-SF-Token': '…' } }`.
 Если браузер заблокировал окно — перетащи сохранённый файл на вьюер.

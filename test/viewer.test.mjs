@@ -186,7 +186,7 @@ test('sfx-grab: merges segments without duplicates and opens the viewer', async 
   await viewer.waitForFunction(() => window.__viewer?.S.spans.length > 0);
   assert.equal(await viewer.evaluate(() => window.__viewer.S.spans.length), total);
   assert.equal(await viewer.evaluate(() => window.__viewer.S.traceId), 'abc');
-  assert.ok(dialogs.some(m => m.includes(`${total} spans`)));
+  assert.deepEqual(dialogs, []); // opens without a confirm
   await viewer.close(); await page.close();
 });
 
@@ -215,8 +215,8 @@ test('sfx-grab: silent viewer leads to a message about the saved file', async ()
   await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v, readyTimeoutMs: 300 }; }, `${base}/test/fake-sfx.html`);
   const [popup] = await Promise.all([page.waitForEvent('popup'), grab()]);
   await page.waitForTimeout(800);
-  assert.equal(dialogs.length, 2);
-  assert.match(dialogs[1], /trace-abc\.json/);
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0], /trace-abc\.json/);
   await popup.close(); await page.close();
 });
 
@@ -232,18 +232,6 @@ test('sfx-grab: opens the window before the first API request (popup blocker)', 
   await viewer.waitForFunction(() => window.__viewer?.S.spans.length > 0);
   assert.equal(await page.evaluate(() => window.__order[0]), 'open');
   await viewer.close(); await page.close();
-});
-
-test('sfx-grab: declining the confirm closes the window', async () => {
-  const page = await browser.newPage();
-  page.on('dialog', d => d.type() === 'confirm' ? d.dismiss() : d.accept());
-  await page.goto(`${base}/test/fake-sfx.html#/apm/traces/abc`);
-  await page.evaluate(([v, t]) => { window.SFX_GRAB = { viewerUrl: v }; localStorage.setItem('X-SF-TOKEN', t); },
-    [`${base}/trace_viewer.html`, SF_TOKEN]);
-  const [viewer] = await Promise.all([page.waitForEvent('popup'), page.addScriptTag({ path: join(ROOT, 'extension/sfx-grab.js') })]);
-  await viewer.waitForEvent('close', { timeout: 3000 });
-  assert.ok(viewer.isClosed());
-  await page.close();
 });
 
 test('?from=sfx: accepts a trace only once', async () => {

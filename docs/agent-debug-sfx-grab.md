@@ -13,7 +13,7 @@ extension in `extension/` via `chrome.scripting.executeScript`, `world: 'MAIN'`)
    (popups are allowed only for a few seconds after the click, so keep `window.open` before the first `await`);
 2. fetches `${apiBase}/v2/apm/trace/${traceId}/segments`, then every segment in parallel, dedupes by
    `spanId ?? id`, saves `trace-<id>.json` to Downloads;
-3. asks `confirm`, then posts `{type: 'sfx-trace', name, data}` to the viewer after it sends `{type: 'sfx-viewer-ready'}`.
+3. posts `{type: 'sfx-trace', name, data}` to the viewer after it sends `{type: 'sfx-viewer-ready'}`.
 
 Defaults: `apiBase = location.origin`, `credentials: 'include'`, `headers = {}`. Overrides: `window.SFX_GRAB`.
 
