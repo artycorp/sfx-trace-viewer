@@ -259,8 +259,8 @@
   #details summary { cursor: pointer; padding: 10px 0 6px; color: var(--dim); font-size: 12px; font-weight: 600; }
   #details summary:hover { color: var(--text); }
   #details table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  #details td { border-top: 1px solid var(--rule-soft); padding: 4px 8px 4px 0; vertical-align: top; word-break: break-all; }
-  #details td.k { color: var(--dim); white-space: nowrap; padding-right: 14px; word-break: normal; width: 1%; }
+  #details td { border-top: 1px solid var(--rule-soft); padding: 4px 8px 4px 0; vertical-align: top; overflow-wrap: anywhere; }
+  #details td.k { color: var(--dim); padding-right: 14px; width: 35%; }
   #details tr.proc td.k { color: var(--faint); font-style: italic; }
   #details td.act { width: 1%; white-space: nowrap; padding-right: 0; }
   #details td.act button { height: 18px; min-width: 20px; padding: 0 5px; font-size: 12px; line-height: 1; opacity: 0; }
@@ -1050,7 +1050,7 @@ function showDetails(id){
     const sv = v != null && typeof v === 'object' ? JSON.stringify(v) : String(v);
     const btns = typeof v === 'object' ? '' :
       `<button class="ghost" data-tf="+" data-k="${esc(k)}" data-v="${esc(sv)}" title="Только спаны с ${esc(k)}=${esc(sv)}">+</button><button class="ghost" data-tf="-" data-k="${esc(k)}" data-v="${esc(sv)}" title="Скрыть спаны с ${esc(k)}=${esc(sv)}">−</button>`;
-    return `<tr${isProc ? ' class="proc"' : ''}><td class="k"${isProc ? ' title="processTags — атрибут ресурса (процесса)"' : ''}>${esc(k)}</td><td>${esc(sv)}</td><td class="act">${btns}</td></tr>`;
+    return `<tr${isProc ? ' class="proc"' : ''}><td class="k"${isProc ? ' title="processTags — атрибут ресурса (процесса)"' : ''}>${esc(k).replace(/[._\/-]/g, '$&<wbr>')}</td><td>${esc(sv)}</td><td class="act">${btns}</td></tr>`;
   }).join('');
   const nKids = (S.children.get(s.id)||[]).length;
   const nTags = rowsT.length;
