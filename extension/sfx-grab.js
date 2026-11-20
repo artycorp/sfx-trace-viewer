@@ -4,7 +4,6 @@
   const cfg = {
     apiBase: location.origin,
     viewerUrl: 'https://artycorp.github.io/sfx-trace-viewer/trace_viewer.html',
-    headers: {},
     readyTimeoutMs: 15000,
     ...window.SFX_GRAB,
   };
@@ -24,8 +23,16 @@
 
   let spans;
   try {
+    // the SignalFx UI authorizes with the X-SF-Token header and keeps its value in localStorage['X-SF-TOKEN']
+    let headers = cfg.headers;
+    if (headers === undefined) {
+      let token;
+      try { token = localStorage.getItem('X-SF-TOKEN'); } catch {}
+      if (!token) throw new Error('no SignalFx session token found: log in to SignalFx or set SFX_GRAB.headers');
+      headers = { 'X-SF-Token': token };
+    }
     const get = async seg => {
-      const r = await fetch(`${cfg.apiBase}/v2/apm/trace/${traceId}/${seg}`, { credentials: 'include', headers: cfg.headers });
+      const r = await fetch(`${cfg.apiBase}/v2/apm/trace/${traceId}/${seg}`, { credentials: 'include', headers });
       if (r.status === 401 || r.status === 403) {
         throw new Error(`HTTP ${r.status}, not authorized: log in to SignalFx or set SFX_GRAB.headers`);
       }

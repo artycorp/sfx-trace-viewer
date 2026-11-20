@@ -14,9 +14,11 @@ const DEEP_SPAN = '0000000000001036';   // третий уровень: 1034 →
 
 let server, browser, base;
 
-// fake SignalFx API: 2 segments overlapping by 10 spans, the second shaped as {spans}; trace 'bad' → 401
-async function fakeSfxApi(res, id, seg) {
-  if (id === 'bad') return res.writeHead(401).end();
+// fake SignalFx API: 2 segments overlapping by 10 spans, the second shaped as {spans};
+// 401 for trace 'bad' or without the X-SF-Token the UI keeps in localStorage['X-SF-TOKEN']
+const SF_TOKEN = 'test-token';
+async function fakeSfxApi(req, res, id, seg) {
+  if (id === 'bad' || req.headers['x-sf-token'] !== SF_TOKEN) return res.writeHead(401).end();
   const spans = JSON.parse(await readFile(join(ROOT, 'trace.json'), 'utf8')).spans, h = spans.length >> 1;
   const body = { segments: ['s1', 's2'], s1: spans.slice(0, h + 10), s2: { spans: spans.slice(h) } }[seg];
   if (!body) return res.writeHead(404).end();
@@ -27,7 +29,7 @@ before(async () => {
     let path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^(\.\.[/\\])+/, '');
     if (path === '/') path = '/index.html';
     const api = path.match(/^\/v2\/apm\/trace\/([^/]+)\/([^/]+)$/);
-    if (api) return fakeSfxApi(res, api[1], api[2]);
+    if (api) return fakeSfxApi(req, res, api[1], api[2]);
     try {
       const body = await readFile(join(ROOT, path));
       res.writeHead(200, { 'content-type': TYPES[extname(path)] || 'application/octet-stream' }).end(body);
@@ -163,12 +165,15 @@ test('?from=sfx: bad data shows an alert without crashing', async () => {
   await page.close();
 });
 
-async function sfxPage(traceId) {
+async function sfxPage(traceId, token = SF_TOKEN) {
   const page = await browser.newPage();
   const dialogs = [];
   page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
   await page.goto(`${base}/test/fake-sfx.html#/apm/traces/${traceId}`);
-  await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v }; }, `${base}/trace_viewer.html`);
+  await page.evaluate(([v, t]) => {
+    window.SFX_GRAB = { viewerUrl: v };
+    if (t) localStorage.setItem('X-SF-TOKEN', t);
+  }, [`${base}/trace_viewer.html`, token]);
   const grab = () => page.addScriptTag({ path: join(ROOT, 'extension/sfx-grab.js') });
   return { page, dialogs, grab };
 }
@@ -191,6 +196,16 @@ test('sfx-grab: 401 shows an auth error and closes the viewer window', async () 
   await page.waitForTimeout(500);
   assert.equal(dialogs.length, 1);
   assert.match(dialogs[0], /not authorized/);
+  assert.ok(viewer.isClosed());
+  await page.close();
+});
+
+test('sfx-grab: no session token in localStorage gives a clear error and closes the window', async () => {
+  const { page, dialogs, grab } = await sfxPage('abc', null);
+  const [viewer] = await Promise.all([page.waitForEvent('popup'), grab()]);
+  await page.waitForTimeout(500);
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0], /no SignalFx session token/);
   assert.ok(viewer.isClosed());
   await page.close();
 });
@@ -223,7 +238,8 @@ test('sfx-grab: declining the confirm closes the window', async () => {
   const page = await browser.newPage();
   page.on('dialog', d => d.type() === 'confirm' ? d.dismiss() : d.accept());
   await page.goto(`${base}/test/fake-sfx.html#/apm/traces/abc`);
-  await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v }; }, `${base}/trace_viewer.html`);
+  await page.evaluate(([v, t]) => { window.SFX_GRAB = { viewerUrl: v }; localStorage.setItem('X-SF-TOKEN', t); },
+    [`${base}/trace_viewer.html`, SF_TOKEN]);
   const [viewer] = await Promise.all([page.waitForEvent('popup'), page.addScriptTag({ path: join(ROOT, 'extension/sfx-grab.js') })]);
   await viewer.waitForEvent('close', { timeout: 3000 });
   assert.ok(viewer.isClosed());
