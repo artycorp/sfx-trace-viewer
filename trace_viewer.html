@@ -1316,10 +1316,10 @@ window.addEventListener('resize', () => { if (S.spans.length) drawMinimap(); });
 /* автозагрузка: ?trace=<url> или trace.json рядом (нужен http) */
 (function autoload(){
   if (/[?&]from=sfx\b/.test(location.search)) {
-    window.addEventListener('message', e => {
+    window.addEventListener('message', function onTrace(e) {
       if (e.data?.type !== 'sfx-trace' || (e.source !== window.opener && e.source !== window)) return;
-      try { loadTrace(e.data.data, e.data.name || 'SignalFx'); }
-      catch (err) { alert('Трейс из SignalFx: ' + err.message); }
+      try { loadTrace(e.data.data, e.data.name || 'SignalFx'); window.removeEventListener('message', onTrace); }
+      catch (err) { alert('Trace from SignalFx: ' + err.message); }
     });
     const ready = { type: 'sfx-viewer-ready' };
     window.opener?.postMessage(ready, '*');

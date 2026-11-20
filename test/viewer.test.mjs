@@ -14,7 +14,7 @@ const DEEP_SPAN = '0000000000001036';   // третий уровень: 1034 →
 
 let server, browser, base;
 
-// поддельный API SignalFx: 2 сегмента с перекрытием в 10 спанов, второй — в форме {spans}; трейс 'bad' → 401
+// fake SignalFx API: 2 segments overlapping by 10 spans, the second shaped as {spans}; trace 'bad' → 401
 async function fakeSfxApi(res, id, seg) {
   if (id === 'bad') return res.writeHead(401).end();
   const spans = JSON.parse(await readFile(join(ROOT, 'trace.json'), 'utf8')).spans, h = spans.length >> 1;
@@ -128,7 +128,7 @@ async function openSfx(path = 'trace_viewer.html?from=sfx') {
   return { page, errors, dialogs };
 }
 
-test('?from=sfx: принимает трейс по postMessage, демо не грузит', async () => {
+test('?from=sfx: loads a trace from postMessage and skips the demo', async () => {
   const { page, errors } = await openSfx();
   await page.waitForTimeout(300);
   assert.equal(await page.evaluate(() => window.__viewer.S.spans.length), 0);
@@ -141,7 +141,7 @@ test('?from=sfx: принимает трейс по postMessage, демо не �
   await page.close();
 });
 
-test('?from=sfx: сообщение из чужого окна игнорируется', async () => {
+test('?from=sfx: ignores messages from a foreign window', async () => {
   const { page } = await openSfx();
   const spans = (await traceJson()).spans.slice(0, 50);
   await page.evaluate(spans => {
@@ -154,7 +154,7 @@ test('?from=sfx: сообщение из чужого окна игнориру�
   await page.close();
 });
 
-test('?from=sfx: битые данные — alert, без падения', async () => {
+test('?from=sfx: bad data shows an alert without crashing', async () => {
   const { page, errors, dialogs } = await openSfx();
   await page.evaluate(() => window.postMessage({ type: 'sfx-trace', name: 'x', data: 42 }, '*'));
   await page.waitForTimeout(300);
@@ -173,7 +173,7 @@ async function sfxPage(traceId) {
   return { page, dialogs, grab };
 }
 
-test('sfx-grab: склеивает сегменты без дублей и открывает вьюер', async () => {
+test('sfx-grab: merges segments without duplicates and opens the viewer', async () => {
   const total = (await traceJson()).spans.length;
   const { page, dialogs, grab } = await sfxPage('abc');
   const [viewer, download] = await Promise.all([page.waitForEvent('popup'), page.waitForEvent('download'), grab()]);
@@ -181,22 +181,21 @@ test('sfx-grab: склеивает сегменты без дублей и от�
   await viewer.waitForFunction(() => window.__viewer?.S.spans.length > 0);
   assert.equal(await viewer.evaluate(() => window.__viewer.S.spans.length), total);
   assert.equal(await viewer.evaluate(() => window.__viewer.S.traceId), 'abc');
-  assert.ok(dialogs.some(m => m.includes(`${total} спанов`)));
+  assert.ok(dialogs.some(m => m.includes(`${total} spans`)));
   await viewer.close(); await page.close();
 });
 
-test('sfx-grab: 401 — ошибка про авторизацию, вьюер не открыт', async () => {
+test('sfx-grab: 401 shows an auth error and closes the viewer window', async () => {
   const { page, dialogs, grab } = await sfxPage('bad');
-  let popups = 0; page.on('popup', () => popups++);
-  await grab();
+  const [viewer] = await Promise.all([page.waitForEvent('popup'), grab()]);
   await page.waitForTimeout(500);
   assert.equal(dialogs.length, 1);
-  assert.match(dialogs[0], /автори/);
-  assert.equal(popups, 0);
+  assert.match(dialogs[0], /not authorized/);
+  assert.ok(viewer.isClosed());
   await page.close();
 });
 
-test('sfx-grab: вьюер не ответил — сообщение про сохранённый файл, а не тишина', async () => {
+test('sfx-grab: silent viewer leads to a message about the saved file', async () => {
   const { page, dialogs, grab } = await sfxPage('abc');
   await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v, readyTimeoutMs: 300 }; }, `${base}/test/fake-sfx.html`);
   const [popup] = await Promise.all([page.waitForEvent('popup'), grab()]);
@@ -204,4 +203,41 @@ test('sfx-grab: вьюер не ответил — сообщение про с�
   assert.equal(dialogs.length, 2);
   assert.match(dialogs[1], /trace-abc\.json/);
   await popup.close(); await page.close();
+});
+
+test('sfx-grab: opens the window before the first API request (popup blocker)', async () => {
+  const { page, grab } = await sfxPage('abc');
+  await page.evaluate(() => {
+    window.__order = [];
+    const open = window.open, f = window.fetch;
+    window.open = (...a) => (window.__order.push('open'), open.apply(window, a));
+    window.fetch = (...a) => (window.__order.push('fetch'), f.apply(window, a));
+  });
+  const [viewer] = await Promise.all([page.waitForEvent('popup'), grab()]);
+  await viewer.waitForFunction(() => window.__viewer?.S.spans.length > 0);
+  assert.equal(await page.evaluate(() => window.__order[0]), 'open');
+  await viewer.close(); await page.close();
+});
+
+test('sfx-grab: declining the confirm closes the window', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', d => d.type() === 'confirm' ? d.dismiss() : d.accept());
+  await page.goto(`${base}/test/fake-sfx.html#/apm/traces/abc`);
+  await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v }; }, `${base}/trace_viewer.html`);
+  const [viewer] = await Promise.all([page.waitForEvent('popup'), page.addScriptTag({ path: join(ROOT, 'extension/sfx-grab.js') })]);
+  await viewer.waitForEvent('close', { timeout: 3000 });
+  assert.ok(viewer.isClosed());
+  await page.close();
+});
+
+test('?from=sfx: accepts a trace only once', async () => {
+  const { page } = await openSfx();
+  const spans = (await traceJson()).spans;
+  await page.evaluate(spans => {
+    window.postMessage({ type: 'sfx-trace', name: 'a', data: { traceId: 'first', spans: spans.slice(0, 50) } }, '*');
+    setTimeout(() => window.postMessage({ type: 'sfx-trace', name: 'b', data: { traceId: 'second', spans: spans.slice(0, 20) } }, '*'), 100);
+  }, spans);
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => window.__viewer.S.traceId), 'first');
+  await page.close();
 });
