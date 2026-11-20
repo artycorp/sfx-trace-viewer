@@ -195,3 +195,13 @@ test('sfx-grab: 401 — ошибка про авторизацию, вьюер �
   assert.equal(popups, 0);
   await page.close();
 });
+
+test('sfx-grab: вьюер не ответил — сообщение про сохранённый файл, а не тишина', async () => {
+  const { page, dialogs, grab } = await sfxPage('abc');
+  await page.evaluate(v => { window.SFX_GRAB = { viewerUrl: v, readyTimeoutMs: 300 }; }, `${base}/test/fake-sfx.html`);
+  const [popup] = await Promise.all([page.waitForEvent('popup'), grab()]);
+  await page.waitForTimeout(800);
+  assert.equal(dialogs.length, 2);
+  assert.match(dialogs[1], /trace-abc\.json/);
+  await popup.close(); await page.close();
+});

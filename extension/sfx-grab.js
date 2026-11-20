@@ -5,6 +5,7 @@
     apiBase: location.origin,
     viewerUrl: 'https://artycorp.github.io/sfx-trace-viewer/trace_viewer.html',
     headers: {},
+    readyTimeoutMs: 15000,
     ...window.SFX_GRAB,
   };
   try {
@@ -38,11 +39,17 @@
     if (!confirm(`Открыть трейс ${traceId} (${spans.length} спанов) во вьюере?`)) return;
     const win = window.open(cfg.viewerUrl + '?from=sfx');
     if (!win) throw new Error(`браузер заблокировал окно. Трейс сохранён в «Загрузки» (${name}) — перетащи его на ${cfg.viewerUrl}`);
-    window.addEventListener('message', function onReady(e) {
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', onReady);
+      alert(`SignalFx → вьюер: вьюер не ответил. Трейс сохранён в «Загрузки» (${name}) — перетащи его на открывшуюся страницу`);
+    }, cfg.readyTimeoutMs);
+    function onReady(e) {
       if (e.source !== win || e.data?.type !== 'sfx-viewer-ready') return;
+      clearTimeout(timer);
       window.removeEventListener('message', onReady);
       win.postMessage({ type: 'sfx-trace', name, data }, new URL(cfg.viewerUrl).origin);
-    });
+    }
+    window.addEventListener('message', onReady);
   } catch (err) {
     alert('SignalFx → вьюер: ' + err.message);
   }
