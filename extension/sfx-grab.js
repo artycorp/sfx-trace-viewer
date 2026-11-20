@@ -62,7 +62,6 @@
 
   const saved = `The trace is saved to Downloads as ${name}: drop it onto ${cfg.viewerUrl}`;
   if (!win) return fail(`the browser blocked the viewer window. ${saved}`);
-  if (!confirm(`Open trace ${traceId} (${spans.length} spans) in the viewer?`)) return win.close();
   if (win.closed) return fail(`lost the connection to the viewer window. ${saved}`);
 
   const send = () => win.postMessage({ type: 'sfx-trace', name, data }, new URL(cfg.viewerUrl).origin);
