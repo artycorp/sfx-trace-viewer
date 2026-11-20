@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "SFX → Trace Viewer",
+  "version": "0.1.0",
+  "description": "Exports the open SignalFx APM trace and opens it in SFX Trace Viewer.",
+  "permissions": ["activeTab", "scripting"],
+  "action": { "default_title": "Open trace in the viewer" },
+  "background": { "service_worker": "background.js" }
+}

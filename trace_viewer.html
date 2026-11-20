@@ -1315,6 +1315,17 @@ window.addEventListener('resize', () => { if (S.spans.length) drawMinimap(); });
 
 /* автозагрузка: ?trace=<url> или trace.json рядом (нужен http) */
 (function autoload(){
+  if (/[?&]from=sfx\b/.test(location.search)) {
+    window.addEventListener('message', function onTrace(e) {
+      if (e.data?.type !== 'sfx-trace' || (e.source !== window.opener && e.source !== window)) return;
+      try { loadTrace(e.data.data, e.data.name || 'SignalFx'); window.removeEventListener('message', onTrace); }
+      catch (err) { alert('Trace from SignalFx: ' + err.message); }
+    });
+    const ready = { type: 'sfx-viewer-ready' };
+    window.opener?.postMessage(ready, '*');
+    window.postMessage(ready, '*');
+    return;
+  }
   const m = location.search.match(/trace=([^&]+)/);
   if (m) { fetchJson(decodeURIComponent(m[1])).then(d => loadTrace(d, m[1])).catch(() => {}); return; }
   if (location.protocol.startsWith('http')) {
